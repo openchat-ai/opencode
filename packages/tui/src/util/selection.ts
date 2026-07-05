@@ -1,4 +1,5 @@
 import type { ClipboardService } from "../context/clipboard"
+import { formatClipboardWriteNotification } from "../clipboard"
 
 type Toast = {
   show: (input: { message: string; variant: "info" | "success" | "warning" | "error" }) => void
@@ -35,8 +36,10 @@ export function copy(renderer: Renderer, toast: Toast, clipboard: ClipboardServi
     focus?.getClipboardText && selection.selectedRenderables.includes(focus) ? focus.getClipboardText(text) : text
 
   clipboard
-    ?.write?.(clipboardText)
-    .then(() => toast.show({ message: "Copied to clipboard", variant: "info" }))
+    .write(clipboardText)
+    .then((outcome) =>
+      toast.show(formatClipboardWriteNotification(outcome, { message: "Copied to clipboard", variant: "info" })),
+    )
     .catch(toast.error)
 
   renderer.clearSelection()

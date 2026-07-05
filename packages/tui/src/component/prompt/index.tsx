@@ -382,16 +382,20 @@ export function Prompt(props: PromptProps) {
         run: async (_input: string | undefined, event?: KeyEvent) => {
           event?.preventDefault()
           event?.stopPropagation()
-          const content = await clipboard.read?.()
-          if (content?.mime.startsWith("image/")) {
-            await pasteAttachment({
-              filename: "clipboard",
-              uri: `data:${content.mime};base64,${content.data}`,
-            })
-            return
-          }
-          if (content?.mime === "text/plain") {
-            await pasteInputText(content.data)
+          try {
+            const content = await clipboard.read()
+            if (content?.mime.startsWith("image/")) {
+              await pasteAttachment({
+                filename: "clipboard",
+                uri: `data:${content.mime};base64,${content.data}`,
+              })
+              return
+            }
+            if (content?.mime === "text/plain") {
+              await pasteInputText(content.data)
+            }
+          } catch (error) {
+            toast.error(error)
           }
         },
       },

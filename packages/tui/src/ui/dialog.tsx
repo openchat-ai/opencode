@@ -7,6 +7,7 @@ import { createStore } from "solid-js/store"
 import { useToast } from "./toast"
 import { useClipboard } from "../context/clipboard"
 import { useConfig } from "../config"
+import { formatClipboardWriteNotification } from "../clipboard"
 
 export function Dialog(
   props: ParentProps<{
@@ -202,9 +203,10 @@ export function DialogProvider(props: ParentProps) {
 
   function copySelection() {
     const text = renderer.getSelection()?.getSelectedText()
-    if (!text || !clipboard.write) return false
+    if (!text) return false
     void clipboard.write(text).then(
-      () => toast.show({ message: "Copied to clipboard", variant: "info" }),
+      (outcome) =>
+        toast.show(formatClipboardWriteNotification(outcome, { message: "Copied to clipboard", variant: "info" })),
       (error) => toast.error(error),
     )
     renderer.clearSelection()

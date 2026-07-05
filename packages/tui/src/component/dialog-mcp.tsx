@@ -9,6 +9,7 @@ import { useTheme } from "../context/theme"
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import type { McpServer } from "@opencode-ai/client"
 import { useClipboard } from "../context/clipboard"
+import { formatClipboardWriteNotification } from "../clipboard"
 import { useToast } from "../ui/toast"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { useConfig } from "../config"
@@ -146,10 +147,14 @@ function DialogMcpError(props: { server: McpServer; onBack: () => void }) {
   onMount(() => dialog.setSize("large"))
 
   const copy = () => {
-    if (!clipboard.write) return
     void clipboard
       .write(error())
-      .then(() => setCopied(true))
+      .then((outcome) => {
+        setCopied(outcome.delivery === "confirmed")
+        toast.show(
+          formatClipboardWriteNotification(outcome, { message: "Copied to clipboard", variant: "info" }),
+        )
+      })
       .catch(toast.error)
   }
 

@@ -1,124 +1,136 @@
-import { execFile, spawn } from "node:child_process"
-import { readFile, rm } from "node:fs/promises"
-import { platform, release, tmpdir } from "node:os"
-import path from "node:path"
-import { promisify } from "node:util"
+import {
+  createClipboard,
+  createHostClipboard,
+  createRendererClipboardAdapter,
+  decodePasteBytes,
+  type ClipboardService as CoreClipboardService,
+  type ClipboardWriteResult,
+  type RendererClipboardBoundary,
+} from "@opentui/core"
+import type { ClipboardService, ClipboardWriteOutcome } from "./context/clipboard"
 
-const exec = promisify(execFile)
+const timeoutMs = 1_000
+const maxReadBytes = 8 * 1024 * 1024
 
-function command(command: string, args: string[] = [], input?: string) {
-  return new Promise<Buffer>((resolve, reject) => {
-    const child = spawn(command, args, { stdio: [input === undefined ? "ignore" : "pipe", "pipe", "ignore"] })
-    const output: Buffer[] = []
-    child.on("error", reject)
-    child.stdout?.on("data", (chunk: Buffer) => output.push(chunk))
-    child.on("close", (code) => {
-      if (code === 0) return resolve(Buffer.concat(output))
-      reject(new Error(`${command} exited with code ${code}`))
-    })
-    if (input !== undefined) child.stdin?.end(input)
-  })
-}
+export type ClipboardNotification = Readonly<{
+  message: string
+  variant: "info" | "success" | "warning"
+}>
 
-function writeOsc52(text: string) {
-  if (!process.stdout.isTTY) return
-  const sequence = `\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`
-  process.stdout.write(process.env.TMUX || process.env.STY ? `\x1bPtmux;\x1b${sequence}\x1b\\` : sequence)
-}
+export type ClipboardCopyState =
+  | "idle"
+  | "confirmed"
+  | "confirmed-partial"
+  | "attempted"
+  | "attempted-partial"
+  | "failed"
 
-export async function read() {
-  if (platform() === "darwin") {
-    const file = path.join(tmpdir(), "opencode-clipboard.png")
-    try {
-      await exec("osascript", [
-        "-e",
-        'set imageData to the clipboard as "PNGf"',
-        "-e",
-        `set fileRef to open for access POSIX file "${file}" with write permission`,
-        "-e",
-        "set eof fileRef to 0",
-        "-e",
-        "write imageData to fileRef",
-        "-e",
-        "close access fileRef",
-      ])
-      return { data: (await readFile(file)).toString("base64"), mime: "image/png" }
-    } catch {
-      // Fall through to text clipboard.
-    } finally {
-      await rm(file, { force: true }).catch(() => {})
-    }
-  }
+export type OwnedClipboardService = ClipboardService & Readonly<{ dispose(): Promise<void> }>
 
-  if (platform() === "win32" || release().includes("WSL")) {
-    const script =
-      "Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img) { $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [System.Convert]::ToBase64String($ms.ToArray()) }"
-    const image = await command("powershell.exe", ["-NonInteractive", "-NoProfile", "-command", script]).catch(() =>
-      Buffer.alloc(0),
+export class ClipboardWriteError extends Error {
+  readonly result: ClipboardWriteResult
+
+  constructor(result: ClipboardWriteResult) {
+    super(
+      `Clipboard write failed (host: ${result.host.status}, terminal: ${result.terminal.status})`,
+      result.host.status === "failed" ? { cause: result.host.error } : undefined,
     )
-    if (image.length) return { data: image.toString().trim(), mime: "image/png" }
-  }
-
-  if (platform() === "linux") {
-    const wayland = await command("wl-paste", ["-t", "image/png"]).catch(() => Buffer.alloc(0))
-    if (wayland.length) return { data: wayland.toString("base64"), mime: "image/png" }
-    const x11 = await command("xclip", ["-selection", "clipboard", "-t", "image/png", "-o"]).catch(() =>
-      Buffer.alloc(0),
-    )
-    if (x11.length) return { data: x11.toString("base64"), mime: "image/png" }
-  }
-
-  const { default: clipboardy } = await import("clipboardy")
-  const text = await clipboardy.read().catch(() => undefined)
-  if (text) return { data: text, mime: "text/plain" }
-}
-
-export function copyCommand(
-  os: NodeJS.Platform,
-  wayland: boolean,
-  has: (name: string) => boolean,
-): string[] | undefined {
-  if (os === "darwin" && has("osascript")) return ["osascript"]
-  if (os === "linux" && wayland && has("wl-copy")) return ["wl-copy"]
-  if (os === "linux" && has("xclip")) return ["xclip", "-selection", "clipboard"]
-  if (os === "linux" && has("xsel")) return ["xsel", "--clipboard", "--input"]
-  if (os === "win32" && has("powershell.exe")) {
-    return [
-      "powershell.exe",
-      "-NonInteractive",
-      "-NoProfile",
-      "-Command",
-      "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; Set-Clipboard -Value ([Console]::In.ReadToEnd())",
-    ]
+    this.name = "ClipboardWriteError"
+    this.result = result
   }
 }
 
-let copyMethod: Promise<(text: string) => Promise<void>> | undefined
+export function createTuiClipboard(renderer: RendererClipboardBoundary): OwnedClipboardService {
+  return createClipboardAdapter(
+    createClipboard({
+      host: createHostClipboard({
+        timeoutMs,
+        maxReadBytes,
+        maxWriteBytes: 8 * 1024 * 1024,
+        maxImagePixels: 64 * 1024 * 1024,
+        maxConversionBytes: 512 * 1024 * 1024,
+        maxConcurrentOperations: 16,
+        maxProviderTransfers: 16,
+        maxWorkUnitsPerDrain: 64,
+      }),
+      terminal: createRendererClipboardAdapter(renderer),
+    }),
+  )
+}
 
-function getCopyMethod() {
-  return (copyMethod ??= (async () => {
-    const { which } = await import("@opencode-ai/core/util/which")
-    const native = copyCommand(platform(), Boolean(process.env.WAYLAND_DISPLAY), (name) => Boolean(which(name)))
-    if (native?.[0] === "osascript") {
-      return async (text: string) => {
-        const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
-        await command("osascript", ["-e", `set the clipboard to "${escaped}"`]).catch(() => undefined)
+export function createClipboardAdapter(clipboard: CoreClipboardService): OwnedClipboardService {
+  return {
+    async read() {
+      const result = await clipboard.read({
+        preferredTypes: ["image/png", "text/plain"],
+        selection: "clipboard",
+      })
+      if (result.status !== "read") {
+        if (result.status === "empty" || result.status === "unsupported" || result.status === "cancelled") return
+        if (result.status === "failed") throw result.error
+        if (result.status === "timed-out") throw new Error(`Clipboard read timed out after ${timeoutMs}ms`)
+        if (result.status === "limit-exceeded") {
+          throw new RangeError(`Clipboard read exceeded the ${maxReadBytes}-byte limit`)
+        }
+        throw new Error(`Unexpected clipboard read status: ${result.status}`)
       }
-    }
-    if (native) {
-      return async (text: string) => {
-        await command(native[0], native.slice(1), text).catch(() => undefined)
+
+      if (result.representation.mimeType === "image/png") {
+        return {
+          data: Buffer.from(result.representation.bytes).toString("base64"),
+          mime: result.representation.mimeType,
+        }
       }
-    }
-    return async (text: string) => {
-      const { default: clipboardy } = await import("clipboardy")
-      await clipboardy.write(text).catch(() => undefined)
-    }
-  })())
+      if (result.representation.mimeType === "text/plain") {
+        if (result.representation.bytes.length === 0) return
+        return {
+          data: decodePasteBytes(result.representation.bytes),
+          mime: result.representation.mimeType,
+        }
+      }
+      throw new Error(`Unexpected clipboard MIME type: ${result.representation.mimeType}`)
+    },
+    async write(text) {
+      return classifyClipboardWriteResult(
+        await clipboard.writeText(text, {
+          destination: "all-available",
+          selection: "clipboard",
+        }),
+      )
+    },
+    dispose() {
+      return clipboard.dispose()
+    },
+  }
 }
 
-export async function write(text: string) {
-  writeOsc52(text)
-  const method = await getCopyMethod()
-  await method(text)
+export function classifyClipboardWriteResult(result: ClipboardWriteResult): ClipboardWriteOutcome {
+  const partial =
+    result.host.status === "failed" ||
+    result.host.status === "timed-out" ||
+    result.host.status === "cancelled" ||
+    result.terminal.status === "local-failure"
+
+  if (result.host.status === "written") return { delivery: "confirmed", partial, result }
+  if (result.terminal.status === "attempted") return { delivery: "attempted", partial, result }
+  throw new ClipboardWriteError(result)
+}
+
+export function formatClipboardWriteNotification(
+  outcome: ClipboardWriteOutcome,
+  confirmed: ClipboardNotification,
+): ClipboardNotification {
+  if (outcome.delivery === "confirmed" && !outcome.partial) return confirmed
+  if (outcome.delivery === "attempted" && !outcome.partial) {
+    return { message: "Sent to terminal clipboard (acceptance unconfirmed)", variant: "info" }
+  }
+  if (outcome.delivery === "confirmed") {
+    return { message: "Copied to host clipboard; terminal clipboard dispatch failed", variant: "warning" }
+  }
+  return { message: "Sent to terminal clipboard; host clipboard write failed", variant: "warning" }
+}
+
+export function clipboardCopyState(outcome: ClipboardWriteOutcome): ClipboardCopyState {
+  if (!outcome.partial) return outcome.delivery
+  return `${outcome.delivery}-partial`
 }

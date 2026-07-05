@@ -7,6 +7,23 @@ import {
 } from "../../src/context/runtime"
 import type { ParentProps } from "solid-js"
 import { LogProvider, type LogSink } from "../../src/context/log"
+import { ClipboardProvider, type ClipboardService } from "../../src/context/clipboard"
+
+const clipboard: ClipboardService = {
+  async read() {
+    return undefined
+  },
+  async write() {
+    return {
+      delivery: "confirmed",
+      partial: false,
+      result: {
+        host: { status: "written" },
+        terminal: { status: "not-attempted", capability: "unknown" },
+      },
+    }
+  },
+}
 
 export function TestTuiContexts(
   props: ParentProps<{
@@ -14,6 +31,7 @@ export function TestTuiContexts(
     directory?: string
     paths?: Partial<TuiPaths>
     log?: LogSink
+    clipboard?: ClipboardService
   }>,
 ) {
   return (
@@ -28,7 +46,9 @@ export function TestTuiContexts(
         }}
       >
         <TuiTerminalEnvironmentProvider value={{ platform: "linux" }}>
-          <TuiStartupProvider value={{ skipInitialLoading: false }}>{props.children}</TuiStartupProvider>
+          <TuiStartupProvider value={{ skipInitialLoading: false }}>
+            <ClipboardProvider value={props.clipboard ?? clipboard}>{props.children}</ClipboardProvider>
+          </TuiStartupProvider>
         </TuiTerminalEnvironmentProvider>
       </TuiPathsProvider>
     </LogProvider>

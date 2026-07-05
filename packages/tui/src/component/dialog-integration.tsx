@@ -8,6 +8,7 @@ import type {
 } from "@opencode-ai/client"
 import { createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useClipboard } from "../context/clipboard"
+import { formatClipboardWriteNotification } from "../clipboard"
 import { useData } from "../context/data"
 import { useClient } from "../context/client"
 import { Keymap } from "../context/keymap"
@@ -452,8 +453,12 @@ function OAuthAuto(props: {
         run: () => {
           const value = props.attempt.instructions.match(/[A-Z0-9]{4}-[A-Z0-9]{4,5}/)?.[0] ?? props.attempt.url
           clipboard
-            .write?.(value)
-            .then(() => toast.show({ message: "Copied to clipboard", variant: "info" }))
+            .write(value)
+            .then((outcome) =>
+              toast.show(
+                formatClipboardWriteNotification(outcome, { message: "Copied to clipboard", variant: "info" }),
+              ),
+            )
             .catch(toast.error)
         },
       },

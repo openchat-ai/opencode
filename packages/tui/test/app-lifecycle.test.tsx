@@ -1,14 +1,89 @@
 import { expect, mock, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
+import type {
+  ClipboardOptions,
+  ClipboardService,
+  HostClipboardOptions,
+  HostClipboardService,
+  RendererClipboardBoundary,
+} from "@opentui/core"
 import { Effect, FileSystem } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { Global } from "@opencode-ai/util/global"
 import { createEventStream, createFetch, directory, json } from "./fixture/tui-client"
 
+const openTui = { ...(await import("@opentui/core")) }
+
+function restoreOpenTui() {
+  mock.restore()
+  mock.module("@opentui/core", () => openTui)
+}
+
+async function mockOpenTuiClipboard(
+  renderer: RendererClipboardBoundary,
+  options: {
+    dispose?: () => Promise<void>
+    constructionError?: Error
+  } = {},
+) {
+  const calls = {
+    host: [] as (HostClipboardOptions | undefined)[],
+    adapter: [] as RendererClipboardBoundary[],
+    service: [] as ClipboardOptions[],
+    dispose: 0,
+    hostDispose: 0,
+    hostWrite: 0,
+  }
+  const host: HostClipboardService = {
+    maxWriteBytes: 8 * 1024 * 1024,
+    async read() {
+      return { status: "empty" }
+    },
+    async writeText() {
+      calls.hostWrite++
+      return { status: "written" }
+    },
+    async clear() {
+      return { status: "cleared" }
+    },
+    async dispose() {
+      calls.hostDispose++
+      await options.dispose?.()
+    },
+  }
+
+  mock.module("@opentui/core", () => ({
+    ...openTui,
+    createCliRenderer: async () => renderer,
+    createHostClipboard: (input?: HostClipboardOptions) => {
+      if (options.constructionError) throw options.constructionError
+      calls.host.push(input)
+      return host
+    },
+    createRendererClipboardAdapter: (input: RendererClipboardBoundary) => {
+      calls.adapter.push(input)
+      return openTui.createRendererClipboardAdapter(input)
+    },
+    createClipboard: (input: ClipboardOptions) => {
+      calls.service.push(input)
+      const service = openTui.createClipboard(input)
+      return {
+        read: service.read,
+        writeText: service.writeText,
+        clear: service.clear,
+        async dispose() {
+          calls.dispose++
+          await service.dispose()
+        },
+      } satisfies ClipboardService
+    },
+  }))
+  return calls
+}
+
 test("SIGHUP clears title and disposes scoped resources once", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
-  const core = await import("@opentui/core")
-  mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
+  const clipboard = await mockOpenTuiClipboard(setup.renderer)
   const titles: string[] = []
   let started!: () => void
   const ready = new Promise<void>((resolve) => {
@@ -42,18 +117,46 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
 
     expect(setup.renderer.isDestroyed).toBe(true)
     expect(titles.at(-1)).toBe("")
+    expect(clipboard.host).toEqual([
+      {
+        timeoutMs: 1_000,
+        maxReadBytes: 8 * 1024 * 1024,
+        maxWriteBytes: 8 * 1024 * 1024,
+        maxImagePixels: 64 * 1024 * 1024,
+        maxConversionBytes: 512 * 1024 * 1024,
+        maxConcurrentOperations: 16,
+        maxProviderTransfers: 16,
+        maxWorkUnitsPerDrain: 64,
+      },
+    ])
+    expect(clipboard.adapter).toEqual([setup.renderer])
+    expect(clipboard.service).toHaveLength(1)
+    expect(clipboard.dispose).toBe(1)
+    expect(clipboard.hostDispose).toBe(1)
     expect(process.listeners("SIGHUP").every((listener) => listeners.has(listener))).toBe(true)
   } finally {
     if (!setup.renderer.isDestroyed) setup.renderer.destroy()
     await server.stop()
-    mock.restore()
+    restoreOpenTui()
   }
 })
 
 test("session lifecycle updates the terminal title and prints the epilogue after cleanup", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
-  const core = await import("@opentui/core")
-  mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
+  let releaseDispose!: () => void
+  let startDispose!: () => void
+  const disposeStarted = new Promise<void>((resolve) => {
+    startDispose = resolve
+  })
+  const disposeReady = new Promise<void>((resolve) => {
+    releaseDispose = resolve
+  })
+  const clipboard = await mockOpenTuiClipboard(setup.renderer, {
+    dispose: async () => {
+      startDispose()
+      await disposeReady
+    },
+  })
   let initialTitle!: () => void
   const initialTitleSet = new Promise<void>((resolve) => {
     initialTitle = resolve
@@ -124,17 +227,162 @@ test("session lifecycle updates the terminal title and prints the epilogue after
       data: { sessionID: "dummy", title: "Renamed session" },
     })
     await renamedTitleSet
-    setup.renderer.destroy()
+    let settled = false
+    void task.then(
+      () => (settled = true),
+      () => (settled = true),
+    )
+    events.emit({
+      id: "evt_exit",
+      created: 2,
+      type: "tui.command.execute",
+      data: { command: "app.exit" },
+    })
+    await disposeStarted
+    expect(settled).toBe(false)
+    expect(stdout).not.toContain("Renamed session")
+    releaseDispose()
     await task
 
     expect(stdout).toContain("Renamed session")
     expect(stdout).toContain("opencode2 -s dummy")
     expect(promptRequests).toBe(0)
+    expect(clipboard.dispose).toBe(1)
+    expect(clipboard.hostDispose).toBe(1)
   } finally {
+    releaseDispose()
     process.stdout.write = originalWrite
     if (!setup.renderer.isDestroyed) setup.renderer.destroy()
     await server.stop()
-    mock.restore()
+    restoreOpenTui()
+  }
+})
+
+test("direct renderer destruction disposes the clipboard once", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const clipboard = await mockOpenTuiClipboard(setup.renderer)
+  let started!: () => void
+  const ready = new Promise<void>((resolve) => {
+    started = resolve
+  })
+  const setTitle = setup.renderer.setTerminalTitle.bind(setup.renderer)
+  setup.renderer.setTerminalTitle = (title) => {
+    if (title === "OpenCode") started()
+    setTitle(title)
+  }
+  const events = createEventStream()
+  const calls = createFetch(undefined, events)
+  const server = Bun.serve({ port: 0, fetch: (request) => calls.fetch(request) })
+
+  try {
+    const { run } = await import("../src/app")
+    const task = Effect.runPromise(
+      run({
+        server: { endpoint: { url: server.url.toString() } },
+        config: { get: async () => ({}), update: async () => ({}) },
+        packages: { resolve: async () => undefined },
+        args: {},
+        log: () => {},
+      }).pipe(Effect.provide(AppNodeBuilder.build(Global.node)), Effect.provide(FileSystem.layerNoop({}))),
+    )
+    await ready
+    const staleCopy = setup.renderer.console.onCopySelection
+    setup.renderer.destroy()
+    await task
+
+    expect(clipboard.dispose).toBe(1)
+    expect(clipboard.hostDispose).toBe(1)
+    await staleCopy?.("stale")
+    expect(clipboard.hostWrite).toBe(0)
+  } finally {
+    if (!setup.renderer.isDestroyed) setup.renderer.destroy()
+    await server.stop()
+    restoreOpenTui()
+  }
+})
+
+test("clipboard construction failure releases the renderer", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const failure = new Error("clipboard construction failed")
+  await mockOpenTuiClipboard(setup.renderer, { constructionError: failure })
+  const events = createEventStream()
+  const calls = createFetch(undefined, events)
+  const server = Bun.serve({ port: 0, fetch: (request) => calls.fetch(request) })
+
+  try {
+    const { run } = await import("../src/app")
+    await expect(
+      Effect.runPromise(
+        run({
+          server: { endpoint: { url: server.url.toString() } },
+          config: { get: async () => ({}), update: async () => ({}) },
+          packages: { resolve: async () => undefined },
+          args: {},
+          log: () => {},
+        }).pipe(Effect.provide(AppNodeBuilder.build(Global.node)), Effect.provide(FileSystem.layerNoop({}))),
+      ),
+    ).rejects.toThrow("clipboard construction failed")
+    expect(setup.renderer.isDestroyed).toBe(true)
+  } finally {
+    if (!setup.renderer.isDestroyed) setup.renderer.destroy()
+    await server.stop()
+    restoreOpenTui()
+  }
+})
+
+test("clipboard disposal failure is logged without failing remaining cleanup", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const clipboard = await mockOpenTuiClipboard(setup.renderer, {
+    dispose: async () => {
+      throw new Error("clipboard disposal failed")
+    },
+  })
+  let started!: () => void
+  const ready = new Promise<void>((resolve) => {
+    started = resolve
+  })
+  const titles: string[] = []
+  const setTitle = setup.renderer.setTerminalTitle.bind(setup.renderer)
+  setup.renderer.setTerminalTitle = (title) => {
+    titles.push(title)
+    if (title === "OpenCode") started()
+    setTitle(title)
+  }
+  const events = createEventStream()
+  const calls = createFetch(undefined, events)
+  const server = Bun.serve({ port: 0, fetch: (request) => calls.fetch(request) })
+  const logs: unknown[] = []
+
+  try {
+    const { run } = await import("../src/app")
+    const task = Effect.runPromise(
+      run({
+        server: { endpoint: { url: server.url.toString() } },
+        config: { get: async () => ({}), update: async () => ({}) },
+        packages: { resolve: async () => undefined },
+        args: {},
+        log: (_level, message) => void logs.push(message),
+      }).pipe(
+        Effect.provide(AppNodeBuilder.build(Global.node)),
+        Effect.provide(FileSystem.layerNoop({})),
+      ),
+    )
+    await ready
+    setup.renderer.destroy()
+    await task
+
+    expect(clipboard.dispose).toBe(1)
+    expect(clipboard.hostDispose).toBe(1)
+    expect(titles.at(-1)).toBe("")
+    expect(
+      logs.some((message) =>
+        (Array.isArray(message) ? message : [message]).some((value) => value === "Failed to dispose TUI clipboard"),
+      ),
+    ).toBe(true)
+  } finally {
+    if (!setup.renderer.isDestroyed) setup.renderer.destroy()
+    await server.stop()
+    restoreOpenTui()
   }
 })
 
