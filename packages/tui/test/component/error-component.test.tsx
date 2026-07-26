@@ -3,6 +3,7 @@ import { testRender } from "@opentui/solid"
 import { ErrorComponent } from "../../src/component/error-component"
 import { ClipboardProvider, type ClipboardService, type ClipboardWriteOutcome } from "../../src/context/clipboard"
 import { ExitProvider } from "../../src/context/exit"
+import { TuiAppProvider } from "../../src/context/runtime"
 
 const outcomes = [
   {
@@ -81,11 +82,13 @@ test("crash report distinguishes every delivered clipboard state", async () => {
   for (const scenario of outcomes) {
     const app = await testRender(
       () => (
-        <ExitProvider exit={() => {}}>
-          <ClipboardProvider value={clipboard(async () => scenario.outcome)}>
-            <ErrorComponent error={new Error("boom")} reset={() => {}} />
-          </ClipboardProvider>
-        </ExitProvider>
+        <TuiAppProvider value={{ name: "test", version: "test", channel: "test" }}>
+          <ExitProvider exit={() => {}}>
+            <ClipboardProvider value={clipboard(async () => scenario.outcome)}>
+              <ErrorComponent error={new Error("boom")} reset={() => {}} />
+            </ClipboardProvider>
+          </ExitProvider>
+        </TuiAppProvider>
       ),
       { width: 100, height: 24 },
     )
@@ -104,15 +107,17 @@ test("crash report distinguishes every delivered clipboard state", async () => {
 test("crash report catches clipboard rejection", async () => {
   const app = await testRender(
     () => (
-      <ExitProvider exit={() => {}}>
-        <ClipboardProvider
-          value={clipboard(async () => {
-            throw new Error("copy failed")
-          })}
-        >
-          <ErrorComponent error={new Error("boom")} reset={() => {}} />
-        </ClipboardProvider>
-      </ExitProvider>
+      <TuiAppProvider value={{ name: "test", version: "test", channel: "test" }}>
+        <ExitProvider exit={() => {}}>
+          <ClipboardProvider
+            value={clipboard(async () => {
+              throw new Error("copy failed")
+            })}
+          >
+            <ErrorComponent error={new Error("boom")} reset={() => {}} />
+          </ClipboardProvider>
+        </ExitProvider>
+      </TuiAppProvider>
     ),
     { width: 100, height: 24 },
   )

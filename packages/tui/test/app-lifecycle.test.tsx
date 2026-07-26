@@ -240,11 +240,10 @@ test("session lifecycle updates the terminal title and prints the epilogue after
     })
     await disposeStarted
     expect(settled).toBe(false)
-    expect(stdout).not.toContain("Renamed session")
+    expect(stdout).toBe("")
     releaseDispose()
     await task
 
-    expect(stdout).toContain("Renamed session")
     expect(stdout).toContain("opencode2 -s dummy")
     expect(promptRequests).toBe(0)
     expect(clipboard.dispose).toBe(1)
@@ -278,6 +277,7 @@ test("direct renderer destruction disposes the clipboard once", async () => {
     const { run } = await import("../src/app")
     const task = Effect.runPromise(
       run({
+        app: { name: "test", version: "test", channel: "test" },
         server: { endpoint: { url: server.url.toString() } },
         config: { get: async () => ({}), update: async () => ({}) },
         packages: { resolve: async () => undefined },
@@ -314,6 +314,7 @@ test("clipboard construction failure releases the renderer", async () => {
     await expect(
       Effect.runPromise(
         run({
+          app: { name: "test", version: "test", channel: "test" },
           server: { endpoint: { url: server.url.toString() } },
           config: { get: async () => ({}), update: async () => ({}) },
           packages: { resolve: async () => undefined },
@@ -357,6 +358,7 @@ test("clipboard disposal failure is logged without failing remaining cleanup", a
     const { run } = await import("../src/app")
     const task = Effect.runPromise(
       run({
+        app: { name: "test", version: "test", channel: "test" },
         server: { endpoint: { url: server.url.toString() } },
         config: { get: async () => ({}), update: async () => ({}) },
         packages: { resolve: async () => undefined },
