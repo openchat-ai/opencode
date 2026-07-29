@@ -70,7 +70,7 @@ export function createClipboardAdapter(clipboard: CoreClipboardService): OwnedCl
         if (result.status === "failed") throw result.error
         if (result.status === "timed-out") throw new Error(`Clipboard read timed out after ${timeoutMs}ms`)
         if (result.status === "limit-exceeded") {
-          throw new RangeError(`Clipboard read exceeded the ${maxReadBytes}-byte limit`)
+          throw new RangeError("Clipboard content exceeded configured read or image conversion limits")
         }
         throw new Error(`Unexpected clipboard read status: ${result.status}`)
       }

@@ -89,14 +89,16 @@ function writeError(result: ClipboardWriteResult) {
 
 test("requests the standard clipboard with image-first preferences and adapts PNG bytes", async () => {
   const requests: ClipboardReadOptions[] = []
+  const bytes = new Uint8Array([0, 1, 2, 255])
   const clipboard = createClipboardAdapter(
     openTuiClipboard({
-      read: { status: "read", representation: { mimeType: "image/png", bytes: new Uint8Array([0, 1, 2, 255]) } },
+      read: { status: "read", representation: { mimeType: "image/png", bytes } },
       onCoreRead: (input) => requests.push(input),
     }),
   )
 
   expect(await clipboard.read()).toEqual({ data: "AAEC/w==", mime: "image/png" })
+  expect(bytes).toEqual(new Uint8Array([0, 1, 2, 255]))
   expect(requests).toEqual([{ preferredTypes: ["image/png", "text/plain"], selection: "clipboard" }])
 })
 
@@ -137,7 +139,7 @@ test("preserves backend read failures and synthesizes operational errors", async
   const limitError = await limited.read().then(undefined, (error) => error)
   expect(limitError).toBeInstanceOf(RangeError)
   if (!(limitError instanceof RangeError)) throw limitError
-  expect(limitError.message).toBe("Clipboard read exceeded the 8388608-byte limit")
+  expect(limitError.message).toBe("Clipboard content exceeded configured read or image conversion limits")
 
   const unexpected = createClipboardAdapter(
     openTuiClipboard({
