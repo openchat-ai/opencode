@@ -1,0 +1,104 @@
+import { afterEach, expect, test } from "bun:test"
+import { ImageRenderable } from "@opentui/core"
+import { testRender } from "@opentui/solid"
+import type { SessionMessageAssistant, SessionMessageAssistantTool } from "@opencode-ai/client"
+import { sessionImageKeys, ToolImages } from "../../../src/routes/session"
+
+const PNG_1X1_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4AWP4z8DwHwAFAAH/e+m+7wAAAABJRU5ErkJggg=="
+const image = { type: "file" as const, uri: `data:image/png;base64,${PNG_1X1_BASE64}`, mime: "image/png" }
+let setup: Awaited<ReturnType<typeof testRender>> | undefined
+
+afterEach(() => {
+  setup?.renderer.destroy()
+  setup = undefined
+})
+
+test("renders bounded inline images from completed tool content", async () => {
+  setup = await testRender(() => toolImages([image, image, image, image, image, image, image]), {
+    width: 80,
+    height: 70,
+  })
+  await setup.renderOnce()
+
+  const first = setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:1")
+  if (!(first instanceof ImageRenderable)) throw new Error("Tool image did not render")
+  await first.loadPromise
+
+  expect(first.fit).toBe("fit")
+  expect(first.height).toBe(18)
+  expect(setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:2")).toBeInstanceOf(
+    ImageRenderable,
+  )
+  expect(setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:3")).toBeInstanceOf(
+    ImageRenderable,
+  )
+  expect(setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:0")).toBeUndefined()
+  expect(setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:4")).toBeUndefined()
+  expect(setup.captureCharFrame()).toContain("+3 more images")
+})
+
+test("does not fetch image tool content from external sources", async () => {
+  setup = await testRender(
+    () =>
+      toolImages([
+        { type: "file", uri: "https://example.test/image.png", mime: "image/png" },
+        { type: "file", uri: "file:///tmp/image.png", mime: "image/png" },
+        { type: "file", uri: "data:text/plain;base64,SGVsbG8=", mime: "text/plain" },
+      ]),
+    { width: 80, height: 24 },
+  )
+  await setup.renderOnce()
+
+  expect(setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:0")).toBeUndefined()
+})
+
+test("does not reserve image slots for reverted messages", () => {
+  const visible = assistant("message-1", [tool([image])])
+  const reverted = assistant("message-2", [tool([image, image, image, image, image, image])])
+
+  expect([...sessionImageKeys([visible, reverted], reverted.id)]).toEqual(["message-1:call-1:0"])
+})
+
+test("falls back when inline image content is malformed", async () => {
+  setup = await testRender(
+    () => toolImages([{ type: "file", uri: "data:image/png;base64,aW52YWxpZA==", mime: "image/png" }]),
+    { width: 80, height: 24 },
+  )
+  await setup.renderOnce()
+
+  const preview = setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:0")
+  if (!(preview instanceof ImageRenderable)) throw new Error("Tool image did not render")
+  await preview.loadPromise
+
+  expect(await setup.waitForFrame((frame) => frame.includes("No preview"))).toContain("No preview")
+})
+
+function toolImages(content: Extract<SessionMessageAssistantTool["state"], { status: "completed" }>["content"]) {
+  const part = tool(content)
+  const message = assistant("message-1", [part])
+  return <ToolImages parts={[{ messageID: message.id, part }]} visible={sessionImageKeys([message])} />
+}
+
+function assistant(id: string, content: SessionMessageAssistant["content"]): SessionMessageAssistant {
+  return {
+    type: "assistant",
+    id,
+    agent: "build",
+    model: { id: "model", providerID: "provider" },
+    content,
+    time: { created: 1 },
+  }
+}
+
+function tool(
+  content: Extract<SessionMessageAssistantTool["state"], { status: "completed" }>["content"],
+): SessionMessageAssistantTool {
+  return {
+    type: "tool",
+    id: "call-1",
+    name: "image",
+    state: { status: "completed", input: {}, content },
+    time: { created: 0, completed: 1 },
+  }
+}
