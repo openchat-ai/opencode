@@ -77,13 +77,11 @@ async function mountPrompt(read: () => Promise<ClipboardReadResult>, imagePrevie
 
   const events = createEventStream()
   const calls = createFetch(undefined, events)
-  const requests: string[] = []
   let preloaded!: () => void
   const preload = new Promise<void>((resolve) => (preloaded = resolve))
   const server = Bun.serve({
     port: 0,
     fetch: async (request) => {
-      requests.push(new URL(request.url).pathname)
       const response = await calls.fetch(request)
       const url = new URL(request.url)
       if (url.pathname === "/api/session/active") preloaded()
@@ -105,22 +103,14 @@ async function mountPrompt(read: () => Promise<ClipboardReadResult>, imagePrevie
         log: () => {},
       }).pipe(Effect.provide(AppNodeBuilder.build(Global.node)), Effect.provide(FileSystem.layerNoop({}))),
     )
-    await Promise.race([
-      mounted,
-      task.then(() => {
-        throw new Error("Prompt application exited before mounting")
-      }),
-      Bun.sleep(2_000).then(() => {
-        throw new Error(`Prompt application did not mount; requests: ${requests.join(", ")}`)
-      }),
-    ])
+    await mounted
     await setup.waitFor(() => activePromptRef?.focused === true)
     await preload
     await Bun.sleep(0)
   } catch (error) {
     setup.renderer.destroy()
-    await server.stop()
     await task?.catch(() => undefined)
+    await server.stop()
     activeSetup = undefined
     activeHost = undefined
     activePromptRef = undefined
