@@ -318,6 +318,9 @@ test("renders at most three left-aligned cropped thumbnails", async () => {
     expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-3")).toBeUndefined()
     const frame = await prompt.setup.waitForFrame((frame) => frame.includes("+1 more"))
     expect(frame).toMatch(/^┃  █/m)
+    expect(frame.match(/\[Image 1\]/g)).toHaveLength(1)
+    expect(frame.match(/\[Image 2\]/g)).toHaveLength(1)
+    expect(frame.match(/\[Image 3\]/g)).toHaveLength(1)
 
     await prompt.setup.mockMouse.click(49, 1, MouseButtons.LEFT)
     await prompt.setup.waitForFrame((frame) => frame.includes("Image 4 of 4"))
@@ -331,13 +334,20 @@ test("renders at most three left-aligned cropped thumbnails", async () => {
   }
 })
 
-test("opens thumbnails by their exact mouse bounds and from the command palette", async () => {
+test("opens image attachments by keyboard, mouse, and command palette", async () => {
   const prompt = await mountPrompt(readPngClipboard, true)
   try {
     await pasteImages(prompt, 2)
 
     const thumbnail = prompt.setup.renderer.root.findDescendantById("prompt-image-preview-1")
     if (!(thumbnail instanceof ImageRenderable)) throw new Error("Second image thumbnail did not render")
+
+    prompt.setup.mockInput.pressKey("x", { ctrl: true })
+    prompt.setup.mockInput.pressKey("i")
+    await prompt.setup.waitForFrame((frame) => frame.includes("Image 1 of 2"))
+    prompt.setup.mockInput.pressCtrlC()
+    await prompt.setup.waitForFrame((frame) => !frame.includes("Image 1 of 2"))
+
     await prompt.setup.mockMouse.click(14, 1, MouseButtons.LEFT)
 
     await prompt.setup.waitForFrame((frame) => frame.includes("Image 1 of 2"))
@@ -369,7 +379,8 @@ test("opens thumbnails by their exact mouse bounds and from the command palette"
     prompt.setup.mockInput.pressKey("p", { ctrl: true })
     await prompt.setup.waitForFrame((frame) => frame.includes("Commands"))
     for (const key of "view image attachments") prompt.setup.mockInput.pressKey(key)
-    await prompt.setup.waitForFrame((frame) => frame.includes("View image attachments"))
+    const palette = await prompt.setup.waitForFrame((frame) => frame.includes("View image attachments"))
+    expect(palette).toContain("ctrl+x i")
     prompt.setup.mockInput.pressEnter()
     await prompt.setup.waitForFrame((frame) => frame.includes("Image 1 of 2"))
   } finally {

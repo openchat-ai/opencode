@@ -86,6 +86,14 @@ test("resolves a session move keybind", () => {
   expect(config.keybinds.get("session.move")).toMatchObject([{ key: "ctrl+o" }])
 })
 
+test("resolves the image viewer keybind", () => {
+  const defaults = resolve({}, { terminalSuspend: true })
+  const overridden = resolve({ keybinds: { prompt_images_view: "ctrl+shift+i" } }, { terminalSuspend: true })
+
+  expect(defaults.keybinds.get("prompt.images.view")).toMatchObject([{ key: "<leader>i" }])
+  expect(overridden.keybinds.get("prompt.images.view")).toMatchObject([{ key: "ctrl+shift+i" }])
+})
+
 test("resolves message navigation defaults", () => {
   const config = resolve({}, { terminalSuspend: true })
 

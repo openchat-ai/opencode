@@ -640,6 +640,7 @@ export function Prompt(props: PromptProps) {
       "prompt.submit",
       "prompt.editor",
       "prompt.editor_context.clear",
+      "prompt.images.view",
       "prompt.stash",
       "prompt.stash.pop",
       "prompt.stash.list",
@@ -1510,7 +1511,7 @@ export function Prompt(props: PromptProps) {
             <Show when={config.prompt?.image_preview && imagePreviewsVisible()}>
               <box
                 width="100%"
-                height={imagePreviewHeight() + 2}
+                height={imagePreviewHeight() + 1}
                 flexDirection="row"
                 flexShrink={0}
                 justifyContent="flex-start"
@@ -1523,23 +1524,28 @@ export function Prompt(props: PromptProps) {
                     return (
                       <box
                         width={imagePreviewWidth()}
-                        height="100%"
+                        height={imagePreviewHeight()}
                         flexBasis={imagePreviewWidth()}
                         flexShrink={1}
-                        flexDirection="column"
                       >
-                        <image
-                          id={`prompt-image-preview-${index()}`}
-                          source={file.uri}
-                          fit="cover"
-                          protocol="auto"
-                          width="100%"
-                          height={imagePreviewHeight()}
-                          onError={() => setFailed(true)}
-                        />
-                        <text fg={theme.text.subdued} wrapMode="none" truncate>
-                          {failed() ? "No preview" : (file.mention?.text ?? `Image ${index() + 1}`)}
-                        </text>
+                        <Show
+                          when={!failed()}
+                          fallback={
+                            <box width="100%" height="100%" alignItems="center" justifyContent="center">
+                              <text fg={theme.text.subdued}>No preview</text>
+                            </box>
+                          }
+                        >
+                          <image
+                            id={`prompt-image-preview-${index()}`}
+                            source={file.uri}
+                            fit="cover"
+                            protocol="auto"
+                            width="100%"
+                            height="100%"
+                            onError={() => setFailed(true)}
+                          />
+                        </Show>
                       </box>
                     )
                   }}
