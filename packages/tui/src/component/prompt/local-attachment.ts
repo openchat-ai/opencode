@@ -1,3 +1,4 @@
+import { constants } from "node:fs"
 import { open } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -40,7 +41,7 @@ const mimeTypes: Record<string, string> = {
 }
 
 async function readFileBounded(file: string, maxBytes: number) {
-  const handle = await open(file, "r")
+  const handle = await open(file, constants.O_RDONLY | constants.O_NONBLOCK)
   try {
     const info = await handle.stat()
     if (!info.isFile() || info.size > maxBytes) throw new Error("Attachment exceeds the local file limit")

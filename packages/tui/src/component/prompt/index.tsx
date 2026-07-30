@@ -305,15 +305,96 @@ export function Prompt(props: PromptProps) {
     extmarkToPart: new Map(),
     interrupt: 0,
   })
+  let disposed = false
+  let pasteQueue = Promise.resolve()
+  let pasteEpoch = 0
+  let pasteMutating = false
+  let pasteMutation = 0
+
+  function capturePrompt() {
+    return {
+      epoch: pasteEpoch,
+      sessionID: props.sessionID,
+      mode: store.mode,
+      text: input.plainText,
+      cursor: input.cursorOffset,
+      files: store.prompt.files && unwrap(store.prompt.files),
+      agents: store.prompt.agents && unwrap(store.prompt.agents),
+      pasted: unwrap(store.prompt.pasted),
+    }
+  }
+
+  function promptChanged(before: ReturnType<typeof capturePrompt>) {
+    if (disposed || input.isDestroyed) return true
+    return (
+      pasteEpoch !== before.epoch ||
+      props.sessionID !== before.sessionID ||
+      store.mode !== before.mode ||
+      input.plainText !== before.text ||
+      input.cursorOffset !== before.cursor ||
+      (store.prompt.files && unwrap(store.prompt.files)) !== before.files ||
+      (store.prompt.agents && unwrap(store.prompt.agents)) !== before.agents ||
+      unwrap(store.prompt.pasted) !== before.pasted
+    )
+  }
+
+  function cancelChangedPrompt(before: ReturnType<typeof capturePrompt>) {
+    if (!promptChanged(before)) return false
+    pasteEpoch = Math.max(pasteEpoch, before.epoch + 1)
+    if (!disposed && !input.isDestroyed) {
+      toast.show({ message: "Attachment paste canceled because the prompt changed", variant: "warning" })
+    }
+    return true
+  }
+
+  function enqueuePaste(run: (before: ReturnType<typeof capturePrompt>) => Promise<void>) {
+    const epoch = pasteEpoch
+    pasteQueue = pasteQueue
+      .then(async () => {
+        if (disposed || epoch !== pasteEpoch) return
+        await run(capturePrompt())
+      })
+      .catch((error) => {
+        if (!disposed) toast.error(error)
+      })
+    return pasteQueue
+  }
+
+  function setPromptMode(mode: "normal" | "shell") {
+    if (store.mode === mode) return
+    pasteEpoch++
+    setStore("mode", mode)
+  }
+
+  function applyPaste(run: () => void) {
+    const mutation = ++pasteMutation
+    pasteMutating = true
+    try {
+      run()
+    } finally {
+      queueMicrotask(() => {
+        if (pasteMutation === mutation) pasteMutating = false
+      })
+    }
+  }
+
   const imageAttachments = createMemo(() =>
     (store.prompt.files ?? []).filter((file) => typeof file.uri === "string" && file.uri.startsWith("data:image/")),
   )
   const imagePreviewHeight = createMemo(() => Math.max(4, Math.min(8, Math.floor(dimensions().height / 4))))
   const imagePreviewWidth = createMemo(() => imagePreviewHeight() * 2)
+  const imagePreviewAvailableWidth = createMemo(() => Math.min(70, Math.max(0, dimensions().width - 9)))
   const imagePreviewLimit = createMemo(() =>
-    Math.max(1, Math.min(3, Math.floor((Math.min(70, dimensions().width - 9) - 8) / (imagePreviewWidth() + 1)))),
+    Math.max(1, Math.min(3, Math.floor((imagePreviewAvailableWidth() - 8) / (imagePreviewWidth() + 1)))),
   )
-  const hiddenImageAttachmentCount = createMemo(() => Math.max(0, imageAttachments().length - imagePreviewLimit()))
+  const visibleImageCount = createMemo(() => Math.min(imagePreviewLimit(), imageAttachments().length))
+  const hiddenImageAttachmentCount = createMemo(() => imageAttachments().length - visibleImageCount())
+  const imagePreviewsVisible = createMemo(
+    () => imageAttachments().length > 0 && imagePreviewAvailableWidth() >= imagePreviewWidth(),
+  )
+  const imageOverflowVisible = createMemo(
+    () => hiddenImageAttachmentCount() > 0 && imagePreviewAvailableWidth() >= imagePreviewWidth() + 9,
+  )
 
   function openImagePreview(initial: number) {
     const images = imageAttachments()
@@ -322,14 +403,14 @@ export function Prompt(props: PromptProps) {
   }
 
   function imagePreviewMouseIndex(event: MouseEvent): number | undefined {
-    if (!config.prompt?.image_preview || imageAttachments().length === 0) return undefined
-    const x = event.x - anchor.x - 2
+    if (!config.prompt?.image_preview || !imagePreviewsVisible()) return undefined
+    const x = event.x - anchor.x - 3
     const y = event.y - anchor.y - 1
     if (x < 0 || y < 0 || y >= imagePreviewHeight()) return undefined
     const stride = imagePreviewWidth() + 1
     const index = Math.floor(x / stride)
-    if (index < imagePreviewLimit() && x % stride < imagePreviewWidth()) return index
-    if (index === imagePreviewLimit() && hiddenImageAttachmentCount() > 0) return imagePreviewLimit()
+    if (index < visibleImageCount() && x % stride < imagePreviewWidth()) return index
+    if (index === visibleImageCount() && imageOverflowVisible() && x % stride < 8) return visibleImageCount()
     return undefined
   }
 
@@ -401,11 +482,12 @@ export function Prompt(props: PromptProps) {
         name: "prompt.paste",
         category: "Prompt",
         palette: undefined,
-        run: async (_input: string | undefined, event?: KeyEvent) => {
+        run: (_input: string | undefined, event?: KeyEvent) => {
           event?.preventDefault()
           event?.stopPropagation()
-          try {
+          return enqueuePaste(async (before) => {
             const content = await clipboard.read()
+            if (cancelChangedPrompt(before)) return
             if (content?.mime.startsWith("image/")) {
               pasteAttachment({
                 filename: "clipboard",
@@ -414,11 +496,9 @@ export function Prompt(props: PromptProps) {
               return
             }
             if (content?.mime === "text/plain") {
-              await pasteInputText(content.data)
+              await pasteInputText(content.data, before)
             }
-          } catch (error) {
-            toast.error(error)
-          }
+          })
         },
       },
       {
@@ -439,7 +519,7 @@ export function Prompt(props: PromptProps) {
           if (!input.focused) return
           // TODO: this should be its own command
           if (store.mode === "shell") {
-            setStore("mode", "normal")
+            setPromptMode("normal")
             return
           }
           if (!props.sessionID) return
@@ -584,12 +664,14 @@ export function Prompt(props: PromptProps) {
       input.blur()
     },
     set(prompt) {
+      pasteEpoch++
       input.setText(prompt.text)
       setStore("prompt", prompt)
       restoreExtmarksFromPrompt(prompt)
       input.gotoBufferEnd()
     },
     reset() {
+      pasteEpoch++
       input.clear()
       input.extmarks.clear()
       setStore("prompt", emptyPrompt())
@@ -613,6 +695,7 @@ export function Prompt(props: PromptProps) {
   })
 
   onCleanup(() => {
+    disposed = true
     if (store.prompt.text) {
       stashed = { prompt: unwrap(store.prompt), cursor: input.cursorOffset }
     }
@@ -836,7 +919,7 @@ export function Prompt(props: PromptProps) {
           group: "Prompt",
           run: () => {
             setStore("placeholder", randomIndex(shell().length))
-            setStore("mode", "shell")
+            setPromptMode("shell")
           },
         },
       ],
@@ -847,7 +930,7 @@ export function Prompt(props: PromptProps) {
     return {
       target: inputTarget,
       enabled: inputTarget() !== undefined && store.mode === "shell",
-      commands: [{ bind: "escape", title: "Exit shell mode", group: "Prompt", run: () => setStore("mode", "normal") }],
+      commands: [{ bind: "escape", title: "Exit shell mode", group: "Prompt", run: () => setPromptMode("normal") }],
     }
   })
 
@@ -858,9 +941,7 @@ export function Prompt(props: PromptProps) {
         cursorVersion()
         return inputTarget() !== undefined && store.mode === "shell" && input?.visualCursor.offset === 0
       })(),
-      commands: [
-        { bind: "backspace", title: "Exit shell mode", group: "Prompt", run: () => setStore("mode", "normal") },
-      ],
+      commands: [{ bind: "backspace", title: "Exit shell mode", group: "Prompt", run: () => setPromptMode("normal") }],
     }
   })
 
@@ -891,7 +972,7 @@ export function Prompt(props: PromptProps) {
             if (!item) return false
             input.setText(item.text)
             setStore("prompt", item)
-            setStore("mode", item.mode ?? "normal")
+            setPromptMode(item.mode ?? "normal")
             restoreExtmarksFromPrompt(item)
             input.cursorOffset = 0
           },
@@ -930,7 +1011,7 @@ export function Prompt(props: PromptProps) {
             if (!item) return false
             input.setText(item.text)
             setStore("prompt", item)
-            setStore("mode", item.mode ?? "normal")
+            setPromptMode(item.mode ?? "normal")
             restoreExtmarksFromPrompt(item)
             input.cursorOffset = input.plainText.length
           },
@@ -1048,7 +1129,7 @@ export function Prompt(props: PromptProps) {
         sessionID,
         command: inputText,
       })
-      setStore("mode", "normal")
+      setPromptMode("normal")
     } else if (
       inputText.startsWith("/") &&
       (data.location.command.list(currentLocation.current) ?? []).some(
@@ -1179,7 +1260,7 @@ export function Prompt(props: PromptProps) {
     const extmarkStart = currentOffset
     const extmarkEnd = extmarkStart + promptOffsetWidth(virtualText)
 
-    input.insertText(virtualText + " ")
+    applyPaste(() => input.insertText(virtualText + " "))
 
     const extmarkId = input.extmarks.create({
       start: extmarkStart,
@@ -1201,35 +1282,15 @@ export function Prompt(props: PromptProps) {
     )
   }
 
-  async function pasteInputText(text: string) {
+  async function pasteInputText(text: string, before: ReturnType<typeof capturePrompt>) {
     const normalizedText = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
     const pastedContent = normalizedText.trim()
     const filepath = normalizePastedFilepath(pastedContent, terminalEnvironment.platform)
     const isUrl = /^(https?):\/\//.test(filepath)
     if (!isUrl) {
-      const promptBefore = {
-        sessionID: props.sessionID,
-        text: input.plainText,
-        cursor: input.cursorOffset,
-        files: store.prompt.files && unwrap(store.prompt.files),
-        agents: store.prompt.agents && unwrap(store.prompt.agents),
-        pasted: unwrap(store.prompt.pasted),
-      }
-      const promptChanged = () =>
-        props.sessionID !== promptBefore.sessionID ||
-        input.plainText !== promptBefore.text ||
-        input.cursorOffset !== promptBefore.cursor ||
-        (store.prompt.files && unwrap(store.prompt.files)) !== promptBefore.files ||
-        (store.prompt.agents && unwrap(store.prompt.agents)) !== promptBefore.agents ||
-        unwrap(store.prompt.pasted) !== promptBefore.pasted
-      const cancelChangedPrompt = () => {
-        if (!promptChanged()) return false
-        toast.show({ message: "Attachment drop canceled because the prompt changed", variant: "warning" })
-        return true
-      }
       const attachment = await readLocalAttachment(filepath)
       if (attachment) {
-        if (cancelChangedPrompt()) return
+        if (cancelChangedPrompt(before)) return
         pasteLocalAttachment(filepath, attachment)
         return
       }
@@ -1245,12 +1306,14 @@ export function Prompt(props: PromptProps) {
           attachments.push({ filepath: candidate, attachment: next })
         }
         if (attachments.length === filepaths.length) {
-          if (cancelChangedPrompt()) return
+          if (cancelChangedPrompt(before)) return
           for (const item of attachments) pasteLocalAttachment(item.filepath, item.attachment)
           return
         }
       }
     }
+
+    if (cancelChangedPrompt(before)) return
 
     const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
     if ((lineCount >= 3 || pastedContent.length > 150) && config.prompt?.paste !== "full") {
@@ -1258,7 +1321,7 @@ export function Prompt(props: PromptProps) {
       return
     }
 
-    input.insertText(normalizedText)
+    applyPaste(() => input.insertText(normalizedText))
 
     setTimeout(() => {
       if (!input || input.isDestroyed) return
@@ -1292,7 +1355,7 @@ export function Prompt(props: PromptProps) {
     const extmarkEnd = extmarkStart + virtualText.length
     const textToInsert = virtualText + " "
 
-    input.insertText(textToInsert)
+    applyPaste(() => input.insertText(textToInsert))
 
     const extmarkId = input.extmarks.create({
       start: extmarkStart,
@@ -1444,7 +1507,7 @@ export function Prompt(props: PromptProps) {
               openImagePreview(index)
             }}
           >
-            <Show when={config.prompt?.image_preview && imageAttachments().length > 0}>
+            <Show when={config.prompt?.image_preview && imagePreviewsVisible()}>
               <box
                 width="100%"
                 height={imagePreviewHeight() + 2}
@@ -1454,7 +1517,7 @@ export function Prompt(props: PromptProps) {
                 gap={1}
                 paddingBottom={1}
               >
-                <For each={imageAttachments().slice(0, imagePreviewLimit())}>
+                <For each={imageAttachments().slice(0, visibleImageCount())}>
                   {(file, index) => {
                     const [failed, setFailed] = createSignal(false)
                     return (
@@ -1481,7 +1544,7 @@ export function Prompt(props: PromptProps) {
                     )
                   }}
                 </For>
-                <Show when={hiddenImageAttachmentCount() > 0 && dimensions().width >= 22}>
+                <Show when={imageOverflowVisible()}>
                   <box
                     width={8}
                     height={imagePreviewHeight()}
@@ -1506,13 +1569,17 @@ export function Prompt(props: PromptProps) {
               minHeight={1}
               maxHeight={maxHeight()}
               onContentChange={() => {
+                if (!pasteMutating) pasteEpoch++
                 const value = input.plainText
                 setStore("prompt", "text", value)
                 auto()?.onInput(value)
                 syncExtmarksWithPromptParts()
                 setCursorVersion((value) => value + 1)
               }}
-              onCursorChange={() => setCursorVersion((value) => value + 1)}
+              onCursorChange={() => {
+                if (!pasteMutating) pasteEpoch++
+                setCursorVersion((value) => value + 1)
+              }}
               onKeyDown={(e: { preventDefault(): void }) => {
                 if (props.disabled) {
                   e.preventDefault()
@@ -1524,7 +1591,7 @@ export function Prompt(props: PromptProps) {
                 // hangul) is flushed to plainText before we read it for submission.
                 setTimeout(() => setTimeout(() => submit(), 0), 0)
               }}
-              onPaste={async (event: PasteEvent) => {
+              onPaste={(event: PasteEvent) => {
                 if (props.disabled) {
                   event.preventDefault()
                   return
@@ -1546,7 +1613,7 @@ export function Prompt(props: PromptProps) {
                 // default paste unless we suppress it first and handle insertion ourselves.
                 event.preventDefault()
 
-                await pasteInputText(normalizedText)
+                void enqueuePaste((before) => pasteInputText(normalizedText, before))
               }}
               ref={(r: TextareaRenderable) => {
                 input = r

@@ -181,6 +181,107 @@ test("normalizes host clipboard text once before inserting it", async () => {
   }
 })
 
+test("serializes overlapping local image pastes", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "opencode-overlap-"))
+  const file = path.join(directory, "image.png")
+  await writeFile(file, PNG_1X1)
+  const prompt = await mountPrompt(async () => ({ status: "empty" }))
+  try {
+    await Promise.all([
+      prompt.setup.mockInput.pasteBracketedText(`'${file}'`),
+      prompt.setup.mockInput.pasteBracketedText(`'${file}'`),
+    ])
+    await prompt.setup.waitFor(() => prompt.prompt.current.files?.length === 2)
+
+    expect(prompt.input.plainText).toBe("[Image 1] [Image 2] ")
+  } finally {
+    await prompt.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("continues queued paste work after a clipboard failure", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "opencode-recovery-"))
+  const file = path.join(directory, "image.png")
+  await writeFile(file, PNG_1X1)
+  const result = Promise.withResolvers<ClipboardReadResult>()
+  const prompt = await mountPrompt(() => result.promise)
+  try {
+    prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
+    await prompt.setup.waitFor(() => prompt.reads === 1)
+    await prompt.setup.mockInput.pasteBracketedText(`'${file}'`)
+    result.reject(new Error("clipboard failed"))
+    await prompt.setup.waitFor(() => prompt.prompt.current.files?.length === 1)
+
+    expect(prompt.input.plainText).toBe("[Image 1] ")
+  } finally {
+    await prompt.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("cancels delayed and queued pastes after a reversible prompt change", async () => {
+  const result = Promise.withResolvers<ClipboardReadResult>()
+  const prompt = await mountPrompt(() => result.promise)
+  try {
+    prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
+    await prompt.setup.waitFor(() => prompt.reads === 1)
+    await prompt.setup.mockInput.pasteBracketedText("queued")
+    prompt.setup.mockInput.pressKey("x")
+    await prompt.setup.waitFor(() => prompt.input.plainText === "x")
+    prompt.setup.mockInput.pressBackspace()
+    await prompt.setup.waitFor(() => prompt.input.plainText === "")
+    prompt.prompt.set({ text: "temporary", files: [], agents: [], pasted: [] })
+    prompt.prompt.reset()
+    await prompt.setup.renderOnce()
+    await prompt.setup.mockInput.pasteBracketedText("new")
+
+    result.resolve({
+      status: "read",
+      representation: { mimeType: "text/plain", bytes: new TextEncoder().encode("/missing-one.png /missing-two.png") },
+    })
+    await prompt.setup.waitForFrame((frame) => frame.includes("Attachment paste canceled"))
+
+    await prompt.setup.waitFor(() => prompt.input.plainText === "new")
+    expect(prompt.prompt.current.files).toEqual([])
+  } finally {
+    await prompt.dispose()
+  }
+})
+
+test("does not insert a delayed image after entering shell mode", async () => {
+  const result = Promise.withResolvers<ClipboardReadResult>()
+  const prompt = await mountPrompt(() => result.promise)
+  try {
+    prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
+    await prompt.setup.waitFor(() => prompt.reads === 1)
+    prompt.setup.mockInput.pressKey("!")
+    await prompt.setup.waitForFrame((frame) => frame.includes("Shell"))
+    prompt.setup.mockInput.pressBackspace()
+    await prompt.setup.waitForFrame((frame) => !frame.includes("Shell"))
+
+    result.resolve(await readPngClipboard())
+    await prompt.setup.waitForFrame((frame) => frame.includes("Attachment paste canceled"))
+
+    expect(prompt.input.plainText).toBe("")
+    expect(prompt.prompt.current.files).toEqual([])
+  } finally {
+    await prompt.dispose()
+  }
+})
+
+test("ignores a clipboard read that completes after prompt teardown", async () => {
+  const result = Promise.withResolvers<ClipboardReadResult>()
+  const prompt = await mountPrompt(() => result.promise)
+
+  prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
+  await prompt.setup.waitFor(() => prompt.reads === 1)
+  prompt.setup.renderer.destroy()
+  result.resolve(await readPngClipboard())
+  await Bun.sleep(0)
+  await prompt.dispose()
+})
+
 test("creates one image mention from PNG clipboard bytes", async () => {
   const prompt = await mountPrompt(readPngClipboard)
   try {
@@ -217,19 +318,40 @@ test("renders at most three left-aligned cropped thumbnails", async () => {
     expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-3")).toBeUndefined()
     const frame = await prompt.setup.waitForFrame((frame) => frame.includes("+1 more"))
     expect(frame).toMatch(/^┃  █/m)
+
+    await prompt.setup.mockMouse.click(49, 1, MouseButtons.LEFT)
+    await prompt.setup.waitForFrame((frame) => frame.includes("Image 4 of 4"))
+    prompt.setup.mockInput.pressCtrlC()
+    await prompt.setup.waitForFrame((frame) => !frame.includes("Image 4 of 4"))
+    await prompt.setup.mockMouse.click(50, 1, MouseButtons.LEFT)
+    await prompt.setup.renderOnce()
+    expect(prompt.setup.captureCharFrame()).not.toContain("Image 4 of 4")
   } finally {
     await prompt.dispose()
   }
 })
 
-test("opens the large image viewer by mouse and command palette", async () => {
+test("opens thumbnails by their exact mouse bounds and from the command palette", async () => {
   const prompt = await mountPrompt(readPngClipboard, true)
   try {
     await pasteImages(prompt, 2)
 
     const thumbnail = prompt.setup.renderer.root.findDescendantById("prompt-image-preview-1")
     if (!(thumbnail instanceof ImageRenderable)) throw new Error("Second image thumbnail did not render")
+    await prompt.setup.mockMouse.click(14, 1, MouseButtons.LEFT)
+
+    await prompt.setup.waitForFrame((frame) => frame.includes("Image 1 of 2"))
+    prompt.setup.mockInput.pressCtrlC()
+    await prompt.setup.waitForFrame((frame) => !frame.includes("Image 1 of 2"))
+
     await prompt.setup.mockMouse.click(15, 1, MouseButtons.LEFT)
+    await prompt.setup.renderOnce()
+    expect(prompt.setup.captureCharFrame()).not.toContain("Image 2 of 2")
+    await prompt.setup.mockMouse.click(29, 1, MouseButtons.LEFT)
+    await prompt.setup.renderOnce()
+    expect(prompt.setup.captureCharFrame()).not.toContain("Image 2 of 2")
+
+    await prompt.setup.mockMouse.click(16, 1, MouseButtons.LEFT)
 
     await prompt.setup.waitForFrame((frame) => frame.includes("Image 2 of 2"))
     const large = prompt.setup.renderer.root.findDescendantById("prompt-image-viewer-image")
@@ -281,6 +403,33 @@ test("reduces the preview count to fit a narrow terminal", async () => {
     expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-0")).toBeInstanceOf(ImageRenderable)
     expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-1")).toBeUndefined()
     await prompt.setup.waitForFrame((frame) => frame.includes("+3 more"))
+  } finally {
+    await prompt.dispose()
+  }
+})
+
+test("does not click a hidden overflow control", async () => {
+  const prompt = await mountPrompt(readPngClipboard, true, 22)
+  try {
+    await pasteImages(prompt, 2)
+    await prompt.setup.mockMouse.click(16, 1, MouseButtons.LEFT)
+    await prompt.setup.renderOnce()
+
+    expect(prompt.setup.captureCharFrame()).not.toContain("Image 2 of 2")
+  } finally {
+    await prompt.dispose()
+  }
+})
+
+test("hides thumbnails when their minimum width does not fit", async () => {
+  const prompt = await mountPrompt(readPngClipboard, true, 16)
+  try {
+    await pasteImages(prompt, 1)
+    expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-0")).toBeUndefined()
+
+    await prompt.setup.mockMouse.click(12, 1, MouseButtons.LEFT)
+    await prompt.setup.renderOnce()
+    expect(prompt.setup.captureCharFrame()).not.toContain("Image 1 of 1")
   } finally {
     await prompt.dispose()
   }
