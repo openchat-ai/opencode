@@ -5,9 +5,9 @@ import { Keymap } from "../context/keymap"
 import { useTheme } from "../context/theme"
 import { useDialog } from "../ui/dialog"
 
-export type ImagePreviewItem = Readonly<{
+type ImagePreviewItem = Readonly<{
   uri: string
-  label: string
+  mention?: Readonly<{ text: string }>
 }>
 
 export function DialogImagePreview(props: { images: readonly ImagePreviewItem[]; initial: number }) {
@@ -27,15 +27,18 @@ export function DialogImagePreview(props: { images: readonly ImagePreviewItem[];
     setIndex((value) => (value + direction + props.images.length) % props.images.length)
   }
 
-  createEffect(on(() => current()?.uri, () => setFailed(false)))
+  createEffect(
+    on(
+      () => current()?.uri,
+      () => setFailed(false),
+    ),
+  )
 
   Keymap.createLayer(() => ({
     mode: "modal",
     commands: [
       { bind: "left", title: "Previous image", group: "Dialog", run: () => move(-1) },
       { bind: "right", title: "Next image", group: "Dialog", run: () => move(1) },
-      { bind: "escape", title: "Close image preview", group: "Dialog", run: () => dialog.clear() },
-      { bind: "ctrl+c", title: "Close image preview", group: "Dialog", run: () => dialog.clear() },
     ],
   }))
 
@@ -63,7 +66,7 @@ export function DialogImagePreview(props: { images: readonly ImagePreviewItem[];
           {props.images.length > 1 ? "← previous" : ""}
         </text>
         <text fg={failed() ? theme.text.feedback.error.default : theme.text.subdued} wrapMode="none" truncate>
-          {failed() ? "No preview" : current().label}
+          {failed() ? "No preview" : (current().mention?.text ?? `Image ${index() + 1}`)}
         </text>
         <text fg={theme.text.subdued} onMouseUp={() => move(1)}>
           {props.images.length > 1 ? "next →" : ""}

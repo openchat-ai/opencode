@@ -20,6 +20,14 @@ describe("prompt local attachments", () => {
       "/tmp/one image.png",
       "/tmp/two.webp",
     ])
+    expect(parsePastedFilepaths("# dropped files\nfile:///tmp/one.png\nfile:///tmp/two.webp", "linux")).toEqual([
+      "/tmp/one.png",
+      "/tmp/two.webp",
+    ])
+    expect(parsePastedFilepaths("/tmp/one\\\\image.png /tmp/two.webp", "linux")).toEqual([
+      "/tmp/one\\image.png",
+      "/tmp/two.webp",
+    ])
     expect(parsePastedFilepaths('"C:\\one image.png" "C:\\two.webp"', "win32")).toEqual([
       "C:\\one image.png",
       "C:\\two.webp",
@@ -28,9 +36,9 @@ describe("prompt local attachments", () => {
 
   test("rejects unbounded and malformed multi-file drops", () => {
     expect(parsePastedFilepaths("'/tmp/one.png /tmp/two.png", "linux")).toEqual([])
-    expect(parsePastedFilepaths(Array.from({ length: 33 }, (_, index) => `/tmp/${index}.png`).join(" "), "linux")).toEqual(
-      [],
-    )
+    expect(
+      parsePastedFilepaths(Array.from({ length: 33 }, (_, index) => `/tmp/${index}.png`).join(" "), "linux"),
+    ).toEqual([])
   })
 
   test("reads SVG attachments as text", async () => {
@@ -60,6 +68,9 @@ describe("prompt local attachments", () => {
         },
         "/tmp/missing.png",
       ),
+    ).toBeUndefined()
+    expect(
+      await readLocalAttachmentWith(files({ mime: "image/png", bytes: new Uint8Array(2) }), "/tmp/large.png", 1),
     ).toBeUndefined()
   })
 })

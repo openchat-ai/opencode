@@ -1,12 +1,14 @@
-import { readFile } from "node:fs/promises"
+import { open } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
+// Bound filesystem work per terminal paste; the byte budget also bounds staged data.
 const MAX_PASTED_FILEPATHS = 32
+export const MAX_LOCAL_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
 export type LocalFiles = Readonly<{
-  readText(path: string): Promise<string>
-  readBytes(path: string): Promise<Uint8Array>
+  readText(path: string, maxBytes: number): Promise<string>
+  readBytes(path: string, maxBytes: number): Promise<Uint8Array>
   mime(path: string): Promise<string>
 }>
 
@@ -14,14 +16,15 @@ export type LocalAttachment =
   | Readonly<{ type: "text"; mime: "image/svg+xml"; content: string }>
   | Readonly<{ type: "binary"; mime: string; content: Uint8Array }>
 
-export function readLocalAttachment(file: string) {
+export function readLocalAttachment(file: string, maxBytes = MAX_LOCAL_ATTACHMENT_BYTES) {
   return readLocalAttachmentWith(
     {
-      readText: (value) => readFile(value, "utf8"),
-      readBytes: (value) => readFile(value),
+      readText: async (value, limit) => (await readFileBounded(value, limit)).toString("utf8"),
+      readBytes: readFileBounded,
       mime: async (value) => mimeTypes[path.extname(value).toLowerCase()] ?? "application/octet-stream",
     },
     file,
+    maxBytes,
   )
 }
 
@@ -36,15 +39,40 @@ const mimeTypes: Record<string, string> = {
   ".webp": "image/webp",
 }
 
+async function readFileBounded(file: string, maxBytes: number) {
+  const handle = await open(file, "r")
+  try {
+    const info = await handle.stat()
+    if (!info.isFile() || info.size > maxBytes) throw new Error("Attachment exceeds the local file limit")
+    const content = Buffer.allocUnsafe(info.size + 1)
+    let offset = 0
+    while (offset < content.byteLength) {
+      const { bytesRead } = await handle.read(content, offset, content.byteLength - offset, offset)
+      if (bytesRead === 0) break
+      offset += bytesRead
+    }
+    if (offset !== info.size) throw new Error("Attachment changed while being read")
+    return content.subarray(0, offset)
+  } finally {
+    await handle.close()
+  }
+}
+
 export function normalizePastedFilepath(value: string, platform: string) {
   const raw = value.replace(/^['"]+|['"]+$/g, "")
-  if (raw.startsWith("file://")) {
-    try {
-      return fileURLToPath(raw)
-    } catch {}
-  }
+  const url = decodeFileURL(raw)
+  if (url) return url
   if (platform === "win32") return raw
   return raw.replace(/\\(.)/g, "$1")
+}
+
+function decodeFileURL(value: string): string | undefined {
+  if (!value.startsWith("file://")) return undefined
+  try {
+    return fileURLToPath(value)
+  } catch {
+    return undefined
+  }
 }
 
 export function parsePastedFilepaths(value: string, platform: string) {
@@ -54,19 +82,25 @@ export function parsePastedFilepaths(value: string, platform: string) {
 
   function push() {
     if (!current) return
-    result.push(normalizePastedFilepath(current, platform))
+    result.push(decodeFileURL(current) ?? current)
     current = ""
   }
 
-  for (let index = 0; index < value.length; index++) {
-    const character = value[index]
+  const input = value.includes("file://")
+    ? value
+        .split(/\r?\n/)
+        .filter((line) => !line.trimStart().startsWith("#"))
+        .join("\n")
+    : value
+  for (let index = 0; index < input.length; index++) {
+    const character = input[index]
     if (quote) {
       if (character === quote) {
         quote = ""
         continue
       }
-      if (character === "\\" && platform !== "win32" && quote === '"' && index + 1 < value.length) {
-        current += value[++index]
+      if (character === "\\" && platform !== "win32" && quote === '"' && index + 1 < input.length) {
+        current += input[++index]
         continue
       }
       current += character
@@ -76,8 +110,8 @@ export function parsePastedFilepaths(value: string, platform: string) {
       quote = character
       continue
     }
-    if (character === "\\" && platform !== "win32" && index + 1 < value.length) {
-      current += value[++index]
+    if (character === "\\" && platform !== "win32" && index + 1 < input.length) {
+      current += input[++index]
       continue
     }
     if (/\s/.test(character)) {
@@ -94,20 +128,20 @@ export function parsePastedFilepaths(value: string, platform: string) {
   return result
 }
 
-export function isSupportedLocalAttachmentPath(file: string) {
-  return path.extname(file).toLowerCase() in mimeTypes
-}
-
-export async function readLocalAttachmentWith(files: LocalFiles, path: string): Promise<LocalAttachment | undefined> {
+export async function readLocalAttachmentWith(
+  files: LocalFiles,
+  path: string,
+  maxBytes = MAX_LOCAL_ATTACHMENT_BYTES,
+): Promise<LocalAttachment | undefined> {
   const mime = await files.mime(path).catch(() => undefined)
-  if (!mime) return
+  if (!mime) return undefined
+  if (!mime.startsWith("image/") && mime !== "application/pdf") return undefined
   if (mime === "image/svg+xml") {
-    const content = await files.readText(path).catch(() => undefined)
-    if (!content) return
+    const content = await files.readText(path, maxBytes).catch(() => undefined)
+    if (!content || Buffer.byteLength(content) > maxBytes) return undefined
     return { type: "text", mime, content }
   }
-  if (!mime.startsWith("image/") && mime !== "application/pdf") return
-  const content = await files.readBytes(path).catch(() => undefined)
-  if (!content) return
+  const content = await files.readBytes(path, maxBytes).catch(() => undefined)
+  if (!content || content.byteLength > maxBytes) return undefined
   return { type: "binary", mime, content }
 }

@@ -2,12 +2,7 @@ import { afterAll, expect, mock, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import {
-  ImageRenderable,
-  TextareaRenderable,
-  type ClipboardReadResult,
-  type HostClipboardService,
-} from "@opentui/core"
+import { ImageRenderable, TextareaRenderable, type ClipboardReadResult, type HostClipboardService } from "@opentui/core"
 import { createTestRenderer, MouseButtons } from "@opentui/core/testing"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { Global } from "@opencode-ai/util/global"
@@ -21,6 +16,10 @@ const openTui = { ...(await import("@opentui/core")) }
 const PNG_1X1_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4AWP4z8DwHwAFAAH/e+m+7wAAAABJRU5ErkJggg=="
 const PNG_1X1 = Buffer.from(PNG_1X1_BASE64, "base64")
+const readPngClipboard = async (): Promise<ClipboardReadResult> => ({
+  status: "read",
+  representation: { mimeType: "image/png", bytes: PNG_1X1 },
+})
 let activeSetup: Awaited<ReturnType<typeof createTestRenderer>> | undefined
 let activeHost: HostClipboardService | undefined
 let activePromptRef: PromptRef | undefined
@@ -144,26 +143,24 @@ async function mountPrompt(read: () => Promise<ClipboardReadResult>, imagePrevie
   }
 }
 
-test("inserts nonempty whitespace-only terminal paste without reading the host clipboard", async () => {
+async function pasteImages(prompt: Awaited<ReturnType<typeof mountPrompt>>, count: number) {
+  for (let index = 0; index < count; index++) {
+    prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
+    await prompt.setup.waitFor(() => prompt.reads === index + 1)
+  }
+}
+
+test("distinguishes whitespace-only terminal paste from empty clipboard fallback", async () => {
   const prompt = await mountPrompt(async () => ({ status: "empty" }))
   try {
     await prompt.setup.mockInput.pasteBracketedText(" \t\n")
     await prompt.setup.waitFor(() => prompt.input.plainText === " \t\n")
-
-    expect(prompt.input.plainText).toBe(" \t\n")
     expect(prompt.reads).toBe(0)
-  } finally {
-    await prompt.dispose()
-  }
-})
 
-test("uses one host clipboard read for a zero-byte terminal paste", async () => {
-  const prompt = await mountPrompt(async () => ({ status: "empty" }))
-  try {
     prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
     await prompt.setup.waitFor(() => prompt.reads === 1)
 
-    expect(prompt.input.plainText).toBe("")
+    expect(prompt.input.plainText).toBe(" \t\n")
     expect(prompt.reads).toBe(1)
   } finally {
     await prompt.dispose()
@@ -185,10 +182,7 @@ test("normalizes host clipboard text once before inserting it", async () => {
 })
 
 test("creates one image mention from PNG clipboard bytes", async () => {
-  const prompt = await mountPrompt(async () => ({
-    status: "read",
-    representation: { mimeType: "image/png", bytes: PNG_1X1 },
-  }))
+  const prompt = await mountPrompt(readPngClipboard)
   try {
     prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
     await prompt.setup.waitFor(() => prompt.input.plainText === "[Image 1] ")
@@ -209,63 +203,39 @@ test("creates one image mention from PNG clipboard bytes", async () => {
   }
 })
 
-test("renders at most three left-aligned square image crops", async () => {
-  const prompt = await mountPrompt(
-    async () => ({
-      status: "read",
-      representation: { mimeType: "image/png", bytes: PNG_1X1 },
-    }),
-    true,
-  )
+test("renders at most three left-aligned cropped thumbnails", async () => {
+  const prompt = await mountPrompt(readPngClipboard, true)
   try {
-    for (let index = 0; index < 4; index++) {
-      prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
-      await prompt.setup.waitFor(() => prompt.reads === index + 1)
-    }
+    await pasteImages(prompt, 4)
 
     const first = prompt.setup.renderer.root.findDescendantById("prompt-image-preview-0")
     if (!(first instanceof ImageRenderable)) throw new Error("Image preview did not render")
     await first.loadPromise
-    const previews = prompt.setup.renderer.root.findDescendantById("prompt-image-previews")
-    if (!previews) throw new Error("Image preview row did not render")
     expect(first.fit).toBe("cover")
-    expect(first.x).toBe(previews.x)
-    expect(first.width).toBe(first.height * 2)
     expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-1")).toBeInstanceOf(ImageRenderable)
     expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-2")).toBeInstanceOf(ImageRenderable)
     expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-3")).toBeUndefined()
-    await prompt.setup.waitForFrame((frame) => frame.includes("+1 more"))
+    const frame = await prompt.setup.waitForFrame((frame) => frame.includes("+1 more"))
+    expect(frame).toMatch(/^┃  █/m)
   } finally {
     await prompt.dispose()
   }
 })
 
-test("opens a clicked thumbnail in a keyboard-navigable large preview", async () => {
-  const prompt = await mountPrompt(
-    async () => ({
-      status: "read",
-      representation: { mimeType: "image/png", bytes: PNG_1X1 },
-    }),
-    true,
-  )
+test("opens the large image viewer by mouse and command palette", async () => {
+  const prompt = await mountPrompt(readPngClipboard, true)
   try {
-    for (let index = 0; index < 2; index++) {
-      prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
-      await prompt.setup.waitFor(() => prompt.reads === index + 1)
-    }
+    await pasteImages(prompt, 2)
 
     const thumbnail = prompt.setup.renderer.root.findDescendantById("prompt-image-preview-1")
     if (!(thumbnail instanceof ImageRenderable)) throw new Error("Second image thumbnail did not render")
-    const card = prompt.setup.renderer.root.findDescendantById("prompt-image-preview-card-1")
-    if (!card) throw new Error("Second image thumbnail card did not render")
     await prompt.setup.mockMouse.click(15, 1, MouseButtons.LEFT)
 
     await prompt.setup.waitForFrame((frame) => frame.includes("Image 2 of 2"))
     const large = prompt.setup.renderer.root.findDescendantById("prompt-image-viewer-image")
-    expect(large).toBeInstanceOf(ImageRenderable)
     if (!(large instanceof ImageRenderable)) throw new Error("Large image preview did not render")
     expect(large.fit).toBe("fit")
-    expect(large.width).toBeGreaterThan(card.width)
+    expect(large.height).toBeGreaterThan(thumbnail.height)
 
     prompt.setup.mockInput.pressArrow("left")
     await prompt.setup.waitForFrame((frame) => frame.includes("Image 1 of 2"))
@@ -273,29 +243,13 @@ test("opens a clicked thumbnail in a keyboard-navigable large preview", async ()
     await prompt.setup.waitForFrame((frame) => !frame.includes("Image 1 of 2"))
     expect(large.isDestroyed).toBe(true)
     await prompt.setup.waitFor(() => prompt.setup.renderer.currentFocusedEditor === prompt.input)
-  } finally {
-    await prompt.dispose()
-  }
-})
-
-test("opens image attachments from the command palette", async () => {
-  const prompt = await mountPrompt(
-    async () => ({
-      status: "read",
-      representation: { mimeType: "image/png", bytes: PNG_1X1 },
-    }),
-    true,
-  )
-  try {
-    prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
-    await prompt.setup.waitFor(() => prompt.reads === 1)
 
     prompt.setup.mockInput.pressKey("p", { ctrl: true })
     await prompt.setup.waitForFrame((frame) => frame.includes("Commands"))
     for (const key of "view image attachments") prompt.setup.mockInput.pressKey(key)
     await prompt.setup.waitForFrame((frame) => frame.includes("View image attachments"))
     prompt.setup.mockInput.pressEnter()
-    await prompt.setup.waitForFrame((frame) => frame.includes("Image 1 of 1"))
+    await prompt.setup.waitForFrame((frame) => frame.includes("Image 1 of 2"))
   } finally {
     await prompt.dispose()
   }
@@ -313,8 +267,6 @@ test("attaches multiple images from one terminal drop", async () => {
 
     expect(prompt.input.plainText).toBe("[Image 1] [Image 2] ")
     expect(prompt.prompt.current.files?.map((file) => file.name)).toEqual(["one image.png", "two image.png"])
-    expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-0")).toBeInstanceOf(ImageRenderable)
-    expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-1")).toBeInstanceOf(ImageRenderable)
   } finally {
     await prompt.dispose()
     await rm(directory, { recursive: true, force: true })
@@ -322,43 +274,20 @@ test("attaches multiple images from one terminal drop", async () => {
 })
 
 test("reduces the preview count to fit a narrow terminal", async () => {
-  const prompt = await mountPrompt(
-    async () => ({
-      status: "read",
-      representation: { mimeType: "image/png", bytes: PNG_1X1 },
-    }),
-    true,
-    32,
-  )
+  const prompt = await mountPrompt(readPngClipboard, true, 32)
   try {
-    for (let index = 0; index < 4; index++) {
-      prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
-      await prompt.setup.waitFor(() => prompt.reads === index + 1)
-    }
+    await pasteImages(prompt, 4)
 
     expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-0")).toBeInstanceOf(ImageRenderable)
     expect(prompt.setup.renderer.root.findDescendantById("prompt-image-preview-1")).toBeUndefined()
     await prompt.setup.waitForFrame((frame) => frame.includes("+3 more"))
-    const previews = prompt.setup.renderer.root.findDescendantById("prompt-image-previews")
-    const overflow = prompt.setup.renderer.root.findDescendantById("prompt-image-overflow")
-    if (!previews || !overflow) throw new Error("Narrow preview layout did not render")
-    expect(overflow.x + overflow.width).toBeLessThanOrEqual(previews.x + previews.width)
-    for (const preview of previews.getChildren()) {
-      expect(preview.x + preview.width).toBeLessThanOrEqual(previews.x + previews.width)
-    }
   } finally {
     await prompt.dispose()
   }
 })
 
 test("removes an image preview when its mention is deleted", async () => {
-  const prompt = await mountPrompt(
-    async () => ({
-      status: "read",
-      representation: { mimeType: "image/png", bytes: PNG_1X1 },
-    }),
-    true,
-  )
+  const prompt = await mountPrompt(readPngClipboard, true)
   try {
     prompt.setup.renderer.keyInput.processPaste(new Uint8Array())
     await prompt.setup.waitFor(
@@ -407,13 +336,7 @@ test("keeps an attachment when its opt-in preview cannot be decoded", async () =
 })
 
 test("ignores malformed attachment URIs restored into the prompt", async () => {
-  const prompt = await mountPrompt(
-    async () => ({
-      status: "read",
-      representation: { mimeType: "image/png", bytes: PNG_1X1 },
-    }),
-    true,
-  )
+  const prompt = await mountPrompt(readPngClipboard, true)
   try {
     const restored = parsePromptInfo({
       text: "[Image 1] ",

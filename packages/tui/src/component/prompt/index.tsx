@@ -3,7 +3,6 @@ import {
   RGBA,
   TextareaRenderable,
   MouseEvent,
-  MouseButton,
   PasteEvent,
   decodePasteBytes,
   type KeyEvent,
@@ -49,10 +48,10 @@ import { useArgs } from "../../context/args"
 import { useConfig } from "../../config"
 import { usePromptMove } from "./move"
 import {
-  isSupportedLocalAttachmentPath,
   normalizePastedFilepath,
   parsePastedFilepaths,
   readLocalAttachment,
+  MAX_LOCAL_ATTACHMENT_BYTES,
   type LocalAttachment,
 } from "./local-attachment"
 import { useData } from "../../context/data"
@@ -312,31 +311,26 @@ export function Prompt(props: PromptProps) {
   const imagePreviewHeight = createMemo(() => Math.max(4, Math.min(8, Math.floor(dimensions().height / 4))))
   const imagePreviewWidth = createMemo(() => imagePreviewHeight() * 2)
   const imagePreviewLimit = createMemo(() =>
-    Math.max(
-      1,
-      Math.min(3, Math.floor((Math.min(70, dimensions().width - 9) - 8) / (imagePreviewWidth() + 1))),
-    ),
+    Math.max(1, Math.min(3, Math.floor((Math.min(70, dimensions().width - 9) - 8) / (imagePreviewWidth() + 1)))),
   )
   const hiddenImageAttachmentCount = createMemo(() => Math.max(0, imageAttachments().length - imagePreviewLimit()))
 
   function openImagePreview(initial: number) {
-    const images = imageAttachments().map((file, index) => ({
-      uri: file.uri,
-      label: file.mention?.text ?? `Image ${index + 1}`,
-    }))
+    const images = imageAttachments()
     if (images.length === 0) return
     dialog.replace(() => <DialogImagePreview images={images} initial={initial} />)
   }
 
-  function imagePreviewMouseIndex(event: MouseEvent) {
-    if (!config.prompt?.image_preview || imageAttachments().length === 0) return
+  function imagePreviewMouseIndex(event: MouseEvent): number | undefined {
+    if (!config.prompt?.image_preview || imageAttachments().length === 0) return undefined
     const x = event.x - anchor.x - 2
     const y = event.y - anchor.y - 1
-    if (x < 0 || y < 0 || y >= imagePreviewHeight()) return
+    if (x < 0 || y < 0 || y >= imagePreviewHeight()) return undefined
     const stride = imagePreviewWidth() + 1
     const index = Math.floor(x / stride)
     if (index < imagePreviewLimit() && x % stride < imagePreviewWidth()) return index
     if (index === imagePreviewLimit() && hiddenImageAttachmentCount() > 0) return imagePreviewLimit()
+    return undefined
   }
 
   createEffect(
@@ -413,7 +407,7 @@ export function Prompt(props: PromptProps) {
           try {
             const content = await clipboard.read()
             if (content?.mime.startsWith("image/")) {
-              await pasteAttachment({
+              pasteAttachment({
                 filename: "clipboard",
                 uri: `data:${content.mime};base64,${content.data}`,
               })
@@ -1213,22 +1207,46 @@ export function Prompt(props: PromptProps) {
     const filepath = normalizePastedFilepath(pastedContent, terminalEnvironment.platform)
     const isUrl = /^(https?):\/\//.test(filepath)
     if (!isUrl) {
+      const promptBefore = {
+        sessionID: props.sessionID,
+        text: input.plainText,
+        cursor: input.cursorOffset,
+        files: store.prompt.files && unwrap(store.prompt.files),
+        agents: store.prompt.agents && unwrap(store.prompt.agents),
+        pasted: unwrap(store.prompt.pasted),
+      }
+      const promptChanged = () =>
+        props.sessionID !== promptBefore.sessionID ||
+        input.plainText !== promptBefore.text ||
+        input.cursorOffset !== promptBefore.cursor ||
+        (store.prompt.files && unwrap(store.prompt.files)) !== promptBefore.files ||
+        (store.prompt.agents && unwrap(store.prompt.agents)) !== promptBefore.agents ||
+        unwrap(store.prompt.pasted) !== promptBefore.pasted
+      const cancelChangedPrompt = () => {
+        if (!promptChanged()) return false
+        toast.show({ message: "Attachment drop canceled because the prompt changed", variant: "warning" })
+        return true
+      }
       const attachment = await readLocalAttachment(filepath)
       if (attachment) {
-        await pasteLocalAttachment(filepath, attachment)
+        if (cancelChangedPrompt()) return
+        pasteLocalAttachment(filepath, attachment)
         return
       }
 
       const filepaths = parsePastedFilepaths(pastedContent, terminalEnvironment.platform)
-      if (filepaths.length > 1 && filepaths.every(isSupportedLocalAttachmentPath)) {
+      if (filepaths.length > 1) {
+        let remaining = MAX_LOCAL_ATTACHMENT_BYTES
         const attachments: Array<{ filepath: string; attachment: LocalAttachment }> = []
         for (const candidate of filepaths) {
-          const next = await readLocalAttachment(candidate)
+          const next = await readLocalAttachment(candidate, remaining)
           if (!next) break
+          remaining -= typeof next.content === "string" ? Buffer.byteLength(next.content) : next.content.byteLength
           attachments.push({ filepath: candidate, attachment: next })
         }
         if (attachments.length === filepaths.length) {
-          for (const item of attachments) await pasteLocalAttachment(item.filepath, item.attachment)
+          if (cancelChangedPrompt()) return
+          for (const item of attachments) pasteLocalAttachment(item.filepath, item.attachment)
           return
         }
       }
@@ -1249,27 +1267,27 @@ export function Prompt(props: PromptProps) {
     }, 0)
   }
 
-  async function pasteLocalAttachment(filepath: string, attachment: LocalAttachment) {
+  function pasteLocalAttachment(filepath: string, attachment: LocalAttachment) {
     const filename = path.basename(filepath)
     if (attachment.type === "text") {
       pasteText(attachment.content, `[SVG: ${filename || "image"}]`)
       return
     }
-    await pasteAttachment({
+    pasteAttachment({
       filename,
       uri: `data:${attachment.mime};base64,${Buffer.from(attachment.content).toString("base64")}`,
     })
   }
 
-  async function pasteAttachment(file: { filename?: string; uri: string }) {
+  function pasteAttachment(file: { filename?: string; uri: string }) {
     const currentOffset = input.cursorOffset
     const extmarkStart = currentOffset
     const pdf = file.uri.startsWith("data:application/pdf;")
-    const prefix = pdf ? "data:application/pdf;" : "data:image/"
-    const count =
-      store.prompt.files?.filter(
-        (attachment) => typeof attachment.uri === "string" && attachment.uri.startsWith(prefix),
-      ).length ?? 0
+    const count = pdf
+      ? (store.prompt.files?.filter(
+          (attachment) => typeof attachment.uri === "string" && attachment.uri.startsWith("data:application/pdf;"),
+        ).length ?? 0)
+      : imageAttachments().length
     const virtualText = pdf ? `[PDF ${count + 1}]` : `[Image ${count + 1}]`
     const extmarkEnd = extmarkStart + virtualText.length
     const textToInsert = virtualText + " "
@@ -1301,7 +1319,6 @@ export function Prompt(props: PromptProps) {
         draft.extmarkToPart.set(extmarkId, { type: "file", index })
       }),
     )
-    return
   }
 
   function clearPrompt() {
@@ -1416,11 +1433,11 @@ export function Prompt(props: PromptProps) {
             flexGrow={1}
             width="100%"
             onMouseDown={(event: MouseEvent) => {
-              if (event.button !== MouseButton.LEFT || imagePreviewMouseIndex(event) === undefined) return
+              if (event.button !== 0 || imagePreviewMouseIndex(event) === undefined) return
               event.preventDefault()
             }}
             onMouseUp={(event: MouseEvent) => {
-              if (event.button !== MouseButton.LEFT) return
+              if (event.button !== 0) return
               const index = imagePreviewMouseIndex(event)
               if (index === undefined) return
               event.preventDefault()
@@ -1429,7 +1446,6 @@ export function Prompt(props: PromptProps) {
           >
             <Show when={config.prompt?.image_preview && imageAttachments().length > 0}>
               <box
-                id="prompt-image-previews"
                 width="100%"
                 height={imagePreviewHeight() + 2}
                 flexDirection="row"
@@ -1443,7 +1459,6 @@ export function Prompt(props: PromptProps) {
                     const [failed, setFailed] = createSignal(false)
                     return (
                       <box
-                        id={`prompt-image-preview-card-${index()}`}
                         width={imagePreviewWidth()}
                         height="100%"
                         flexBasis={imagePreviewWidth()}
@@ -1468,7 +1483,6 @@ export function Prompt(props: PromptProps) {
                 </For>
                 <Show when={hiddenImageAttachmentCount() > 0 && dimensions().width >= 22}>
                   <box
-                    id="prompt-image-overflow"
                     width={8}
                     height={imagePreviewHeight()}
                     flexBasis={8}
