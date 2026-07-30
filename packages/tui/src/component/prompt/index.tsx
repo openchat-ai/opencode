@@ -7,7 +7,7 @@ import {
   decodePasteBytes,
   type KeyEvent,
 } from "@opentui/core"
-import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
+import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match, For } from "solid-js"
 import { registerOpencodeSpinner } from "../register-spinner"
 import path from "path"
 import { fileURLToPath } from "url"
@@ -94,6 +94,7 @@ export type PromptRef = {
 }
 
 const DRAFT_RETENTION_MIN_CHARS = 20
+const MAX_IMAGE_PREVIEWS = 3
 
 function randomIndex(count: number) {
   if (count <= 0) return 0
@@ -310,6 +311,22 @@ export function Prompt(props: PromptProps) {
     extmarkToPart: new Map(),
     interrupt: 0,
   })
+  const imageAttachments = createMemo(() =>
+    (store.prompt.files ?? []).filter((file) => typeof file.uri === "string" && file.uri.startsWith("data:image/")),
+  )
+  const imagePreviewHeight = createMemo(() => Math.max(4, Math.min(8, Math.floor(dimensions().height / 4))))
+  const imagePreviewWidth = createMemo(() => imagePreviewHeight() * 2)
+  const imagePreviewLimit = createMemo(() =>
+    Math.max(
+      1,
+      Math.min(
+        MAX_IMAGE_PREVIEWS,
+        Math.floor((Math.min(70, Math.max(1, dimensions().width - 9)) - 8) / (imagePreviewWidth() + 1)),
+      ),
+    ),
+  )
+  const visibleImageAttachments = createMemo(() => imageAttachments().slice(0, imagePreviewLimit()))
+  const hiddenImageAttachmentCount = createMemo(() => Math.max(0, imageAttachments().length - imagePreviewLimit()))
 
   createEffect(
     on(
@@ -1213,7 +1230,10 @@ export function Prompt(props: PromptProps) {
     const extmarkStart = currentOffset
     const pdf = file.uri.startsWith("data:application/pdf;")
     const prefix = pdf ? "data:application/pdf;" : "data:image/"
-    const count = store.prompt.files?.filter((attachment) => attachment.uri.startsWith(prefix)).length ?? 0
+    const count =
+      store.prompt.files?.filter(
+        (attachment) => typeof attachment.uri === "string" && attachment.uri.startsWith(prefix),
+      ).length ?? 0
     const virtualText = pdf ? `[PDF ${count + 1}]` : `[Image ${count + 1}]`
     const extmarkEnd = extmarkStart + virtualText.length
     const textToInsert = virtualText + " "
@@ -1360,6 +1380,61 @@ export function Prompt(props: PromptProps) {
             flexGrow={1}
             width="100%"
           >
+            <Show when={(config.prompt?.image_preview ?? false) && imageAttachments().length > 0}>
+              <box
+                id="prompt-image-previews"
+                width="100%"
+                height={imagePreviewHeight() + 2}
+                flexDirection="row"
+                flexShrink={0}
+                justifyContent="flex-start"
+                gap={1}
+                paddingBottom={1}
+              >
+                <For each={visibleImageAttachments()}>
+                  {(file, index) => {
+                    const [failed, setFailed] = createSignal(false)
+                    return (
+                      <box
+                        width={imagePreviewWidth()}
+                        height="100%"
+                        flexBasis={imagePreviewWidth()}
+                        flexShrink={1}
+                        flexDirection="column"
+                      >
+                        <image
+                          id={`prompt-image-preview-${index()}`}
+                          source={file.uri}
+                          fit="cover"
+                          protocol="auto"
+                          width="100%"
+                          height={imagePreviewHeight()}
+                          onError={() => setFailed(true)}
+                        />
+                        <text fg={theme.text.subdued} wrapMode="none" truncate>
+                          {failed() ? "No preview" : (file.mention?.text ?? `Image ${index() + 1}`)}
+                        </text>
+                      </box>
+                    )
+                  }}
+                </For>
+                <Show when={hiddenImageAttachmentCount() > 0 && dimensions().width >= 22}>
+                  <box
+                    id="prompt-image-overflow"
+                    width={8}
+                    height={imagePreviewHeight()}
+                    flexBasis={8}
+                    flexShrink={1}
+                    alignItems="center"
+                    justifyContent="center"
+                  >
+                    <text fg={theme.text.subdued} wrapMode="none" truncate>
+                      +{hiddenImageAttachmentCount()} more
+                    </text>
+                  </box>
+                </Show>
+              </box>
+            </Show>
             <textarea
               width="100%"
               placeholder={placeholderText()}

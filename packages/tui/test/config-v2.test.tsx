@@ -21,6 +21,13 @@ test("validates the session tabs setting", () => {
   expect(() => decode({ tabs: { enabled: "on" } })).toThrow()
 })
 
+test("validates the prompt image preview setting", () => {
+  const decode = Schema.decodeUnknownSync(Info)
+
+  expect(decode({ prompt: { image_preview: true } })).toEqual({ prompt: { image_preview: true } })
+  expect(() => decode({ prompt: { image_preview: "on" } })).toThrow()
+})
+
 test("resolves nested config and keybind defaults", () => {
   const config = resolve(
     {
