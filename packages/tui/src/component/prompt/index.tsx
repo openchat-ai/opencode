@@ -3,6 +3,7 @@ import {
   RGBA,
   TextareaRenderable,
   MouseEvent,
+  MouseButton,
   PasteEvent,
   decodePasteBytes,
   type KeyEvent,
@@ -10,7 +11,6 @@ import {
 import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match, For } from "solid-js"
 import { registerOpencodeSpinner } from "../register-spinner"
 import path from "path"
-import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
 import { useTheme, useThemes } from "../../context/theme"
 import { tint } from "../../theme/color"
@@ -48,12 +48,19 @@ import { DialogSkill } from "../dialog-skill"
 import { useArgs } from "../../context/args"
 import { useConfig } from "../../config"
 import { usePromptMove } from "./move"
-import { readLocalAttachment } from "./local-attachment"
+import {
+  isSupportedLocalAttachmentPath,
+  normalizePastedFilepath,
+  parsePastedFilepaths,
+  readLocalAttachment,
+  type LocalAttachment,
+} from "./local-attachment"
 import { useData } from "../../context/data"
 import { useLocation } from "../../context/location"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
 import { abbreviateHome } from "../../runtime"
 import { PluginSlot } from "../../plugin/context"
+import { DialogImagePreview } from "../dialog-image-preview"
 
 registerOpencodeSpinner()
 
@@ -72,17 +79,6 @@ export type PromptProps = {
   }
 }
 
-function pastedFilepath(value: string, platform: string) {
-  const raw = value.replace(/^['"]+|['"]+$/g, "")
-  if (raw.startsWith("file://")) {
-    try {
-      return fileURLToPath(raw)
-    } catch {}
-  }
-  if (platform === "win32") return raw
-  return raw.replace(/\\(.)/g, "$1")
-}
-
 export type PromptRef = {
   focused: boolean
   current: PromptInfo
@@ -94,7 +90,6 @@ export type PromptRef = {
 }
 
 const DRAFT_RETENTION_MIN_CHARS = 20
-const MAX_IMAGE_PREVIEWS = 3
 
 function randomIndex(count: number) {
   if (count <= 0) return 0
@@ -319,14 +314,30 @@ export function Prompt(props: PromptProps) {
   const imagePreviewLimit = createMemo(() =>
     Math.max(
       1,
-      Math.min(
-        MAX_IMAGE_PREVIEWS,
-        Math.floor((Math.min(70, Math.max(1, dimensions().width - 9)) - 8) / (imagePreviewWidth() + 1)),
-      ),
+      Math.min(3, Math.floor((Math.min(70, dimensions().width - 9) - 8) / (imagePreviewWidth() + 1))),
     ),
   )
-  const visibleImageAttachments = createMemo(() => imageAttachments().slice(0, imagePreviewLimit()))
   const hiddenImageAttachmentCount = createMemo(() => Math.max(0, imageAttachments().length - imagePreviewLimit()))
+
+  function openImagePreview(initial: number) {
+    const images = imageAttachments().map((file, index) => ({
+      uri: file.uri,
+      label: file.mention?.text ?? `Image ${index + 1}`,
+    }))
+    if (images.length === 0) return
+    dialog.replace(() => <DialogImagePreview images={images} initial={initial} />)
+  }
+
+  function imagePreviewMouseIndex(event: MouseEvent) {
+    if (!config.prompt?.image_preview || imageAttachments().length === 0) return
+    const x = event.x - anchor.x - 2
+    const y = event.y - anchor.y - 1
+    if (x < 0 || y < 0 || y >= imagePreviewHeight()) return
+    const stride = imagePreviewWidth() + 1
+    const index = Math.floor(x / stride)
+    if (index < imagePreviewLimit() && x % stride < imagePreviewWidth()) return index
+    if (index === imagePreviewLimit() && hiddenImageAttachmentCount() > 0) return imagePreviewLimit()
+  }
 
   createEffect(
     on(
@@ -415,6 +426,13 @@ export function Prompt(props: PromptProps) {
             toast.error(error)
           }
         },
+      },
+      {
+        title: "View image attachments",
+        name: "prompt.images.view",
+        category: "Prompt",
+        enabled: imageAttachments().length > 0,
+        run: () => openImagePreview(0),
       },
       {
         title: "Interrupt session",
@@ -1192,21 +1210,27 @@ export function Prompt(props: PromptProps) {
   async function pasteInputText(text: string) {
     const normalizedText = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
     const pastedContent = normalizedText.trim()
-    const filepath = pastedFilepath(pastedContent, terminalEnvironment.platform)
+    const filepath = normalizePastedFilepath(pastedContent, terminalEnvironment.platform)
     const isUrl = /^(https?):\/\//.test(filepath)
     if (!isUrl) {
       const attachment = await readLocalAttachment(filepath)
-      const filename = path.basename(filepath)
-      if (attachment?.type === "text") {
-        pasteText(attachment.content, `[SVG: ${filename ?? "image"}]`)
+      if (attachment) {
+        await pasteLocalAttachment(filepath, attachment)
         return
       }
-      if (attachment?.type === "binary") {
-        await pasteAttachment({
-          filename,
-          uri: `data:${attachment.mime};base64,${Buffer.from(attachment.content).toString("base64")}`,
-        })
-        return
+
+      const filepaths = parsePastedFilepaths(pastedContent, terminalEnvironment.platform)
+      if (filepaths.length > 1 && filepaths.every(isSupportedLocalAttachmentPath)) {
+        const attachments: Array<{ filepath: string; attachment: LocalAttachment }> = []
+        for (const candidate of filepaths) {
+          const next = await readLocalAttachment(candidate)
+          if (!next) break
+          attachments.push({ filepath: candidate, attachment: next })
+        }
+        if (attachments.length === filepaths.length) {
+          for (const item of attachments) await pasteLocalAttachment(item.filepath, item.attachment)
+          return
+        }
       }
     }
 
@@ -1223,6 +1247,18 @@ export function Prompt(props: PromptProps) {
       input.getLayoutNode().markDirty()
       renderer.requestRender()
     }, 0)
+  }
+
+  async function pasteLocalAttachment(filepath: string, attachment: LocalAttachment) {
+    const filename = path.basename(filepath)
+    if (attachment.type === "text") {
+      pasteText(attachment.content, `[SVG: ${filename || "image"}]`)
+      return
+    }
+    await pasteAttachment({
+      filename,
+      uri: `data:${attachment.mime};base64,${Buffer.from(attachment.content).toString("base64")}`,
+    })
   }
 
   async function pasteAttachment(file: { filename?: string; uri: string }) {
@@ -1379,8 +1415,19 @@ export function Prompt(props: PromptProps) {
             backgroundColor={promptBg()}
             flexGrow={1}
             width="100%"
+            onMouseDown={(event: MouseEvent) => {
+              if (event.button !== MouseButton.LEFT || imagePreviewMouseIndex(event) === undefined) return
+              event.preventDefault()
+            }}
+            onMouseUp={(event: MouseEvent) => {
+              if (event.button !== MouseButton.LEFT) return
+              const index = imagePreviewMouseIndex(event)
+              if (index === undefined) return
+              event.preventDefault()
+              openImagePreview(index)
+            }}
           >
-            <Show when={(config.prompt?.image_preview ?? false) && imageAttachments().length > 0}>
+            <Show when={config.prompt?.image_preview && imageAttachments().length > 0}>
               <box
                 id="prompt-image-previews"
                 width="100%"
@@ -1391,11 +1438,12 @@ export function Prompt(props: PromptProps) {
                 gap={1}
                 paddingBottom={1}
               >
-                <For each={visibleImageAttachments()}>
+                <For each={imageAttachments().slice(0, imagePreviewLimit())}>
                   {(file, index) => {
                     const [failed, setFailed] = createSignal(false)
                     return (
                       <box
+                        id={`prompt-image-preview-card-${index()}`}
                         width={imagePreviewWidth()}
                         height="100%"
                         flexBasis={imagePreviewWidth()}

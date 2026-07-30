@@ -14,16 +14,11 @@ test("validates mini replay settings", () => {
   expect(() => decode({ mini: { replay_limit: 1.5 } })).toThrow()
 })
 
-test("validates the session tabs setting", () => {
+test("validates boolean settings", () => {
   const decode = Schema.decodeUnknownSync(Info)
 
   expect(decode({ tabs: { enabled: true } })).toEqual({ tabs: { enabled: true } })
   expect(() => decode({ tabs: { enabled: "on" } })).toThrow()
-})
-
-test("validates the prompt image preview setting", () => {
-  const decode = Schema.decodeUnknownSync(Info)
-
   expect(decode({ prompt: { image_preview: true } })).toEqual({ prompt: { image_preview: true } })
   expect(() => decode({ prompt: { image_preview: "on" } })).toThrow()
 })

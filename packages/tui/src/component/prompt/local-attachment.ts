@@ -1,5 +1,8 @@
 import { readFile } from "node:fs/promises"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
+
+const MAX_PASTED_FILEPATHS = 32
 
 export type LocalFiles = Readonly<{
   readText(path: string): Promise<string>
@@ -31,6 +34,68 @@ const mimeTypes: Record<string, string> = {
   ".png": "image/png",
   ".svg": "image/svg+xml",
   ".webp": "image/webp",
+}
+
+export function normalizePastedFilepath(value: string, platform: string) {
+  const raw = value.replace(/^['"]+|['"]+$/g, "")
+  if (raw.startsWith("file://")) {
+    try {
+      return fileURLToPath(raw)
+    } catch {}
+  }
+  if (platform === "win32") return raw
+  return raw.replace(/\\(.)/g, "$1")
+}
+
+export function parsePastedFilepaths(value: string, platform: string) {
+  const result: string[] = []
+  let current = ""
+  let quote = ""
+
+  function push() {
+    if (!current) return
+    result.push(normalizePastedFilepath(current, platform))
+    current = ""
+  }
+
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index]
+    if (quote) {
+      if (character === quote) {
+        quote = ""
+        continue
+      }
+      if (character === "\\" && platform !== "win32" && quote === '"' && index + 1 < value.length) {
+        current += value[++index]
+        continue
+      }
+      current += character
+      continue
+    }
+    if (character === "'" || character === '"') {
+      quote = character
+      continue
+    }
+    if (character === "\\" && platform !== "win32" && index + 1 < value.length) {
+      current += value[++index]
+      continue
+    }
+    if (/\s/.test(character)) {
+      push()
+      if (result.length > MAX_PASTED_FILEPATHS) return []
+      continue
+    }
+    current += character
+  }
+
+  if (quote) return []
+  push()
+  if (result.length > MAX_PASTED_FILEPATHS) return []
+  return result
+}
+
+export function isSupportedLocalAttachmentPath(file: string) {
+  return path.extname(file).toLowerCase() in mimeTypes
 }
 
 export async function readLocalAttachmentWith(files: LocalFiles, path: string): Promise<LocalAttachment | undefined> {
