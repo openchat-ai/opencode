@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test"
 import { ImageRenderable } from "@opentui/core"
 import { testRender } from "@opentui/solid"
-import type { SessionMessageAssistant, SessionMessageAssistantTool } from "@opencode-ai/client"
-import { sessionImageKeys, ToolImages } from "../../../src/routes/session"
+import type { SessionMessageAssistant, SessionMessageAssistantTool, SessionMessageUser } from "@opencode-ai/client"
+import { sessionImageKeys, sessionMessageImages, SessionImages, ToolImages } from "../../../src/routes/session"
 
 const PNG_1X1_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4AWP4z8DwHwAFAAH/e+m+7wAAAABJRU5ErkJggg=="
@@ -21,20 +21,16 @@ test("renders bounded inline images from completed tool content", async () => {
   })
   await setup.renderOnce()
 
-  const first = setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:1")
+  const first = setup.renderer.root.findDescendantById("session-image-message-1:call-1:1")
   if (!(first instanceof ImageRenderable)) throw new Error("Tool image did not render")
   await first.loadPromise
 
   expect(first.fit).toBe("fit")
   expect(first.height).toBe(18)
-  expect(setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:2")).toBeInstanceOf(
-    ImageRenderable,
-  )
-  expect(setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:3")).toBeInstanceOf(
-    ImageRenderable,
-  )
-  expect(setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:0")).toBeUndefined()
-  expect(setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:4")).toBeUndefined()
+  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:2")).toBeInstanceOf(ImageRenderable)
+  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:3")).toBeInstanceOf(ImageRenderable)
+  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:0")).toBeUndefined()
+  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:4")).toBeUndefined()
   expect(setup.captureCharFrame()).toContain("+3 more images")
 })
 
@@ -50,7 +46,39 @@ test("does not fetch image tool content from external sources", async () => {
   )
   await setup.renderOnce()
 
-  expect(setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:0")).toBeUndefined()
+  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:0")).toBeUndefined()
+})
+
+test("does not render session images without the opt-in setting", async () => {
+  const part = tool([image])
+  setup = await testRender(() => <ToolImages parts={[{ messageID: "message-1", part }]} visible={new Set()} />, {
+    width: 80,
+    height: 24,
+  })
+  await setup.renderOnce()
+
+  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:0")).toBeUndefined()
+})
+
+test("renders images submitted in user prompts", async () => {
+  const message: SessionMessageUser = {
+    type: "user",
+    id: "message-user",
+    text: "What is in this image?",
+    files: [{ data: PNG_1X1_BASE64, mime: "image/png", source: { type: "inline" }, name: "prompt.png" }],
+    time: { created: 1 },
+  }
+  setup = await testRender(
+    () => <SessionImages images={sessionMessageImages(message)} visible={sessionImageKeys([message])} />,
+    { width: 80, height: 24 },
+  )
+  await setup.renderOnce()
+
+  const preview = setup.renderer.root.findDescendantById("session-image-message-user:file:0")
+  if (!(preview instanceof ImageRenderable)) throw new Error("User image did not render")
+  await preview.loadPromise
+
+  expect(preview.fit).toBe("fit")
 })
 
 test("does not reserve image slots for reverted messages", () => {
@@ -67,7 +95,7 @@ test("falls back when inline image content is malformed", async () => {
   )
   await setup.renderOnce()
 
-  const preview = setup.renderer.root.findDescendantById("session-tool-image-message-1:call-1:0")
+  const preview = setup.renderer.root.findDescendantById("session-image-message-1:call-1:0")
   if (!(preview instanceof ImageRenderable)) throw new Error("Tool image did not render")
   await preview.loadPromise
 
