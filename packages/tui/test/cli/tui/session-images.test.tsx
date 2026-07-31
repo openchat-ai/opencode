@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { ImageRenderable } from "@opentui/core"
+import { MouseButtons } from "@opentui/core/testing"
 import { testRender } from "@opentui/solid"
 import type { SessionMessageAssistant, SessionMessageAssistantTool, SessionMessageUser } from "@opencode-ai/client"
 import { sessionImageKeys, sessionMessageImages, SessionImages, ToolImages } from "../../../src/routes/session"
@@ -15,38 +16,49 @@ afterEach(() => {
 })
 
 test("renders bounded inline images from completed tool content", async () => {
-  setup = await testRender(() => toolImages([image, image, image, image, image, image, image]), {
-    width: 80,
-    height: 70,
-  })
-  await setup.renderOnce()
-
-  const first = setup.renderer.root.findDescendantById("session-image-message-1:call-1:1")
-  if (!(first instanceof ImageRenderable)) throw new Error("Tool image did not render")
-  await first.loadPromise
-
-  expect(first.fit).toBe("fit")
-  expect(first.height).toBe(18)
-  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:2")).toBeInstanceOf(ImageRenderable)
-  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:3")).toBeInstanceOf(ImageRenderable)
-  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:0")).toBeUndefined()
-  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:4")).toBeUndefined()
-  expect(setup.captureCharFrame()).toContain("+3 more images")
-})
-
-test("does not fetch image tool content from external sources", async () => {
+  let opened = -1
   setup = await testRender(
-    () =>
-      toolImages([
-        { type: "file", uri: "https://example.test/image.png", mime: "image/png" },
-        { type: "file", uri: "file:///tmp/image.png", mime: "image/png" },
-        { type: "file", uri: "data:text/plain;base64,SGVsbG8=", mime: "text/plain" },
-      ]),
-    { width: 80, height: 24 },
+    () => toolImages([image, image, image, image, image, image, image], (_, index) => (opened = index)),
+    {
+      width: 80,
+      height: 70,
+    },
   )
   await setup.renderOnce()
 
+  const first = setup.renderer.root.findDescendantById("session-image-message-1:call-1:1")
+  const second = setup.renderer.root.findDescendantById("session-image-message-1:call-1:2")
+  if (!(first instanceof ImageRenderable)) throw new Error("Tool image did not render")
+  if (!(second instanceof ImageRenderable)) throw new Error("Second tool image did not render")
+  await first.loadPromise
+
+  expect(first.fit).toBe("cover")
+  expect(first.protocol).toBe("auto")
+  expect(first.width).toBe(16)
+  expect(first.height).toBe(8)
+  expect(second.y).toBe(first.y)
+  expect(second.x).toBe(first.x + first.width + 1)
+  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:3")).toBeInstanceOf(ImageRenderable)
   expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:0")).toBeUndefined()
+  expect(setup.renderer.root.findDescendantById("session-image-message-1:call-1:4")).toBeUndefined()
+  expect(setup.captureCharFrame()).toContain("+3 more")
+
+  await setup.mockMouse.click(first.x, first.y, MouseButtons.LEFT)
+  expect(opened).toBe(0)
+})
+
+test("does not expose external image tool content to the renderer", () => {
+  expect(
+    sessionMessageImages(
+      assistant("message-1", [
+        tool([
+          { type: "file", uri: "https://example.test/image.png", mime: "image/png" },
+          { type: "file", uri: "file:///tmp/image.png", mime: "image/png" },
+          { type: "file", uri: "data:text/plain;base64,SGVsbG8=", mime: "text/plain" },
+        ]),
+      ]),
+    ),
+  ).toEqual([])
 })
 
 test("does not render session images without the opt-in setting", async () => {
@@ -78,7 +90,7 @@ test("renders images submitted in user prompts", async () => {
   if (!(preview instanceof ImageRenderable)) throw new Error("User image did not render")
   await preview.loadPromise
 
-  expect(preview.fit).toBe("fit")
+  expect(preview.fit).toBe("cover")
 })
 
 test("does not reserve image slots for reverted messages", () => {
@@ -102,10 +114,13 @@ test("falls back when inline image content is malformed", async () => {
   expect(await setup.waitForFrame((frame) => frame.includes("No preview"))).toContain("No preview")
 })
 
-function toolImages(content: Extract<SessionMessageAssistantTool["state"], { status: "completed" }>["content"]) {
+function toolImages(
+  content: Extract<SessionMessageAssistantTool["state"], { status: "completed" }>["content"],
+  onOpen?: (images: readonly { key: string; uri: string }[], index: number) => void,
+) {
   const part = tool(content)
   const message = assistant("message-1", [part])
-  return <ToolImages parts={[{ messageID: message.id, part }]} visible={sessionImageKeys([message])} />
+  return <ToolImages parts={[{ messageID: message.id, part }]} visible={sessionImageKeys([message])} onOpen={onOpen} />
 }
 
 function assistant(id: string, content: SessionMessageAssistant["content"]): SessionMessageAssistant {

@@ -43,7 +43,7 @@ export function DialogImagePreview(props: { images: readonly ImagePreviewItem[];
   }))
 
   return (
-    <box id="prompt-image-viewer" paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
+    <box id="image-viewer" paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
       <box flexDirection="row" justifyContent="space-between">
         <text attributes={TextAttributes.BOLD} fg={theme.text.default}>
           Image {index() + 1} of {props.images.length}
@@ -53,7 +53,7 @@ export function DialogImagePreview(props: { images: readonly ImagePreviewItem[];
         </text>
       </box>
       <image
-        id="prompt-image-viewer-image"
+        id="image-viewer-image"
         source={current().uri}
         fit="fit"
         protocol="auto"

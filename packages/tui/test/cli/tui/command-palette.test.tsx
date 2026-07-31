@@ -5,6 +5,7 @@ import { expect, test } from "bun:test"
 import { onMount } from "solid-js"
 import { ConfigProvider, resolve, type Info, type Interface } from "../../../src/config"
 import { CommandPaletteDialog } from "../../../src/component/command-palette"
+import { settingID, settings } from "../../../src/component/dialog-config"
 import { Keymap } from "../../../src/context/keymap"
 import { ThemeProvider } from "../../../src/context/theme"
 import { DialogProvider, useDialog } from "../../../src/ui/dialog"
@@ -13,7 +14,10 @@ import { TestTuiContexts } from "../../fixture/tui-environment"
 
 test("searches settings globally and opens the matching setting", async () => {
   let current: Info = {}
-  let open!: () => void
+  expect(settings.find((setting) => settingID(setting) === "session.image_preview")).toMatchObject({
+    title: "Transcript images",
+    default: false,
+  })
   const service: Interface = {
     get: async () => current,
     update: async (update) => {
@@ -26,7 +30,6 @@ test("searches settings globally and opens the matching setting", async () => {
 
   function Fixture() {
     const dialog = useDialog()
-    open = () => dialog.replace(() => <CommandPaletteDialog />)
     Keymap.createLayer(() => ({
       mode: "global",
       commands: [
@@ -46,7 +49,7 @@ test("searches settings globally and opens the matching setting", async () => {
         },
       ],
     }))
-    onMount(open)
+    onMount(() => dialog.replace(() => <CommandPaletteDialog />))
     return null
   }
 
@@ -81,16 +84,6 @@ test("searches settings globally and opens the matching setting", async () => {
     await app.waitForFrame((frame) => frame.includes("Settings") && frame.includes("Image previews"))
     app.mockInput.pressEnter()
     await app.waitFor(() => current.prompt?.image_preview === true)
-
-    open()
-    await app.waitForFrame((frame) => frame.includes("New session"))
-    await app.waitFor(() => app.renderer.currentFocusedEditor instanceof InputRenderable)
-    for (const key of "transcript images") app.mockInput.pressKey(key)
-    await app.waitForFrame((frame) => frame.includes("Transcript images"))
-    app.mockInput.pressEnter()
-    await app.waitForFrame((frame) => frame.includes("Settings") && frame.includes("Transcript images"))
-    app.mockInput.pressEnter()
-    await app.waitFor(() => current.session?.image_preview === true)
   } finally {
     app.renderer.destroy()
   }

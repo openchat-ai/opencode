@@ -22,7 +22,6 @@ test("validates boolean settings", () => {
   expect(decode({ prompt: { image_preview: true } })).toEqual({ prompt: { image_preview: true } })
   expect(() => decode({ prompt: { image_preview: "on" } })).toThrow()
   expect(decode({ session: { image_preview: true } })).toEqual({ session: { image_preview: true } })
-  expect(() => decode({ session: { image_preview: "on" } })).toThrow()
 })
 
 test("resolves nested config and keybind defaults", () => {

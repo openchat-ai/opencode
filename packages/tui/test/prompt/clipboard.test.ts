@@ -364,7 +364,7 @@ test("opens image attachments by keyboard, mouse, and command palette", async ()
     await prompt.setup.mockMouse.click(16, 1, MouseButtons.LEFT)
 
     await prompt.setup.waitForFrame((frame) => frame.includes("Image 2 of 2"))
-    const large = prompt.setup.renderer.root.findDescendantById("prompt-image-viewer-image")
+    const large = prompt.setup.renderer.root.findDescendantById("image-viewer-image")
     if (!(large instanceof ImageRenderable)) throw new Error("Large image preview did not render")
     expect(large.fit).toBe("fit")
     expect(large.height).toBeGreaterThan(thumbnail.height)

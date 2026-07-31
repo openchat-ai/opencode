@@ -23,7 +23,7 @@ import { SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner, SPINNER_FRAMES } from "../../component/spinner"
 import { ThemeContextProvider, useTheme, useThemes } from "../../context/theme"
-import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA, MouseEvent } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import type {
   ModelInfo,
@@ -53,6 +53,7 @@ import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
+import { DialogImagePreview } from "../../component/dialog-image-preview"
 import { DialogMessage } from "./dialog-message"
 import { DialogFork } from "./dialog-fork"
 import { DialogTimeline } from "./dialog-timeline"
@@ -1528,6 +1529,7 @@ function SessionGroupView(props: {
 }) {
   const theme = useTheme()
   const ctx = use()
+  const dialog = useDialog()
   const renderer = useRenderer()
   const [expanded, setExpanded] = createSignal(false)
   const [hover, setHover] = createSignal(false)
@@ -1583,7 +1585,13 @@ function SessionGroupView(props: {
         <Show when={expanded() && grouped().length > 0}>
           <For each={grouped()}>{(item) => <ToolPart part={item.part} />}</For>
         </Show>
-        <ToolImages parts={grouped()} visible={ctx.imageKeys()} />
+        <ToolImages
+          parts={grouped()}
+          visible={ctx.imageKeys()}
+          onOpen={(images, index) =>
+            dialog.replace(() => <DialogImagePreview images={images} initial={index} />)
+          }
+        />
         <For each={pending()}>
           {(item) => <ToolPartWithImages messageID={item.messageID} part={item.part} />}
         </For>
@@ -1892,6 +1900,7 @@ function UserMessage(props: { message: SessionMessageUser }) {
   const data = useData()
   const local = useLocal()
   const files = createMemo(() => props.message.files ?? [])
+  const images = createMemo(() => sessionMessageImages(props.message))
   const themes = useThemes()
   const theme = useTheme("elevated")
   const mode = themes.mode
@@ -1910,28 +1919,31 @@ function UserMessage(props: { message: SessionMessageUser }) {
         border={["left"]}
         borderColor={queued() ? theme.border.default : color()}
         customBorderChars={SplitBorder.customBorderChars}
+        backgroundColor={hover() ? theme.raise(theme.background.default) : theme.background.default}
+        onMouseOver={() => setHover(true)}
+        onMouseOut={() => setHover(false)}
+        onMouseUp={() => {
+          if (renderer.getSelection()?.getSelectedText()) return
+          dialog.replace(() => (
+            <DialogMessage
+              messageID={props.message.id}
+              sessionID={ctx.sessionID}
+              setPrompt={(value) => promptRef.current?.set(value)}
+            />
+          ))
+        }}
       >
+        <SessionImages
+          images={images()}
+          visible={ctx.imageKeys()}
+          onOpen={(images, index) =>
+            dialog.replace(() => <DialogImagePreview images={images} initial={index} />)
+          }
+        />
         <box
-          onMouseOver={() => {
-            setHover(true)
-          }}
-          onMouseOut={() => {
-            setHover(false)
-          }}
-          onMouseUp={() => {
-            if (renderer.getSelection()?.getSelectedText()) return
-            dialog.replace(() => (
-              <DialogMessage
-                messageID={props.message.id}
-                sessionID={ctx.sessionID}
-                setPrompt={(value) => promptRef.current?.set(value)}
-              />
-            ))
-          }}
           paddingTop={1}
           paddingBottom={1}
           paddingLeft={2}
-          backgroundColor={hover() ? theme.raise(theme.background.default) : theme.background.default}
           flexShrink={0}
         >
           <text fg={theme.text.default}>{props.message.text}</text>
@@ -1961,7 +1973,6 @@ function UserMessage(props: { message: SessionMessageUser }) {
               </For>
             </box>
           </Show>
-          <SessionImages images={sessionMessageImages(props.message)} visible={ctx.imageKeys()} />
         </box>
       </box>
     </Show>
@@ -2042,9 +2053,7 @@ function AssistantMessage(props: { message: SessionMessageAssistant; last: boole
               <Show when={exploration().get((content as SessionMessageAssistantTool).id)?.first !== false}>
                 <Show
                   when={exploration().get((content as SessionMessageAssistantTool).id)}
-                  fallback={
-                    <ToolPartWithImages messageID={props.message.id} part={content as SessionMessageAssistantTool} />
-                  }
+                  fallback={<ToolPart part={content as SessionMessageAssistantTool} />}
                 >
                   {(summary) => <ExplorationSummary {...summary()} />}
                 </Show>
@@ -2361,10 +2370,15 @@ function ToolPart(props: { part: SessionMessageAssistantTool }) {
 
 function ToolPartWithImages(props: { messageID: string; part: SessionMessageAssistantTool }) {
   const ctx = use()
+  const dialog = useDialog()
   return (
     <>
       <ToolPart part={props.part} />
-      <ToolImages parts={[props]} visible={ctx.imageKeys()} />
+      <ToolImages
+        parts={[props]}
+        visible={ctx.imageKeys()}
+        onOpen={(images, index) => dialog.replace(() => <DialogImagePreview images={images} initial={index} />)}
+      />
     </>
   )
 }
@@ -2372,40 +2386,60 @@ function ToolPartWithImages(props: { messageID: string; part: SessionMessageAssi
 export function ToolImages(props: {
   parts: readonly { messageID: string; part: SessionMessageAssistantTool }[]
   visible: ReadonlySet<string>
+  onOpen?: (images: readonly { key: string; uri: string }[], index: number) => void
 }) {
   const images = createMemo(() => props.parts.flatMap((item) => inlineToolImages(item.messageID, item.part)))
 
-  return <SessionImages images={images()} visible={props.visible} />
+  return <SessionImages images={images()} visible={props.visible} onOpen={props.onOpen} />
 }
 
 export function SessionImages(props: {
   images: readonly { key: string; uri: string }[]
   visible: ReadonlySet<string>
+  onOpen?: (images: readonly { key: string; uri: string }[], index: number) => void
 }) {
   const dimensions = useTerminalDimensions()
   const images = createMemo(() => props.images.filter((image) => props.visible.has(image.key)))
-  const height = createMemo(() => Math.max(6, Math.min(18, Math.floor((dimensions().width - 6) / 4))))
+  const height = createMemo(() => Math.max(4, Math.min(8, Math.floor(dimensions().height / 4))))
+  const width = createMemo(() => height() * 2)
+  const limit = createMemo(() =>
+    Math.max(0, Math.min(3, Math.floor((Math.max(0, dimensions().width - 6) + 1) / (width() + 1)))),
+  )
+  const count = createMemo(() => Math.min(limit(), images().length))
 
   return (
-    <Show when={images().length > 0}>
-      <box flexDirection="column" flexShrink={0} paddingLeft={3} paddingRight={2} gap={1}>
-        <For each={images().slice(0, 3)}>
-          {(image) => {
+    <Show when={count() > 0}>
+      <box
+        flexDirection="row"
+        flexShrink={0}
+        paddingTop={1}
+        paddingLeft={2}
+        paddingRight={2}
+        paddingBottom={1}
+        gap={1}
+      >
+        <For each={images().slice(0, count())}>
+          {(image, index) => {
             const [failed, setFailed] = createSignal(false)
             return (
               <box
-                width="100%"
-                maxWidth={70}
+                width={width()}
                 height={height()}
+                flexBasis={width()}
                 flexShrink={0}
                 alignItems="center"
                 justifyContent="center"
+                onMouseUp={(event: MouseEvent) => {
+                  if (event.button !== 0) return
+                  event.stopPropagation()
+                  props.onOpen?.(images(), index())
+                }}
               >
                 <Show when={!failed()} fallback={<text>No preview</text>}>
                   <image
                     id={`session-image-${image.key}`}
                     source={image.uri}
-                    fit="fit"
+                    fit="cover"
                     protocol="auto"
                     width="100%"
                     height="100%"
@@ -2416,8 +2450,12 @@ export function SessionImages(props: {
             )
           }}
         </For>
-        <Show when={images().length > 3}>
-          <text>+{images().length - 3} more images</text>
+        <Show when={images().length > count()}>
+          <box width={8} height={height()} flexShrink={1} alignItems="center" justifyContent="center">
+            <text wrapMode="none" truncate>
+              +{images().length - count()} more
+            </text>
+          </box>
         </Show>
       </box>
     </Show>
@@ -2449,7 +2487,7 @@ export function sessionMessageImages(message: SessionMessageInfo) {
 function inlineToolImages(messageID: string, part: SessionMessageAssistantTool) {
   return toolDisplayContent(part.state).flatMap((content, index) =>
     content.type === "file" && content.mime.startsWith("image/") && content.uri.startsWith("data:image/")
-      ? [{ ...content, key: `${messageID}:${part.id}:${index}` }]
+      ? [{ key: `${messageID}:${part.id}:${index}`, uri: content.uri }]
       : [],
   )
 }
