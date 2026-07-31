@@ -45,9 +45,9 @@
       "@octokit/rest": "22.0.0",
       "@hono/standard-validator": "0.2.0",
       "@hono/zod-validator": "0.4.2",
-      "@opentui/core": "0.0.0-20260730-570a889d",
-      "@opentui/keymap": "0.0.0-20260730-570a889d",
-      "@opentui/solid": "0.0.0-20260730-570a889d",
+      "@opentui/core": "0.0.0-20260731-669d7f5c",
+      "@opentui/keymap": "0.0.0-20260731-669d7f5c",
+      "@opentui/solid": "0.0.0-20260731-669d7f5c",
       "@tanstack/solid-virtual": "3.13.32",
       "@shikijs/stream": "4.2.0",
       "@standard-schema/spec": "1.1.0",
@@ -148,9 +148,9 @@
     "electron"
   ],
   "overrides": {
-    "@opentui/core": "0.0.0-20260730-570a889d",
-    "@opentui/keymap": "0.0.0-20260730-570a889d",
-    "@opentui/solid": "0.0.0-20260730-570a889d",
+    "@opentui/core": "0.0.0-20260731-669d7f5c",
+    "@opentui/keymap": "0.0.0-20260731-669d7f5c",
+    "@opentui/solid": "0.0.0-20260731-669d7f5c",
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
     "effect": "catalog:"
