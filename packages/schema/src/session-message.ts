@@ -194,6 +194,7 @@ export const Compaction = Schema.Struct({
   reason: Schema.Literals(["auto", "manual"]),
   summary: Schema.String,
   recent: Schema.String,
+  pinned: Schema.String.pipe(optional),
   ...Base,
 }).annotate({ identifier: "Session.Message.Compaction" })
 

@@ -383,6 +383,7 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
             reason: event.data.reason,
             summary: event.data.text,
             recent: event.data.recent,
+            pinned: event.data.pinned,
             time: { created: event.data.timestamp },
           }),
         )

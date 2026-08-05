@@ -131,23 +131,23 @@ const settings = (documents: readonly Config.Entry[]) => {
 const select = (
   entries: readonly Entry[],
   tokens: number,
-): { readonly head: string; readonly recent: string } | undefined => {
+): { readonly head: string; readonly recent: string; readonly headEntries: readonly Entry[] } | undefined => {
   const conversation = entries
     .filter((entry) => entry.message.type !== "compaction")
-    .map((entry) => serialize(entry.message))
-    .filter(Boolean)
+    .map((entry) => ({ entry, text: serialize(entry.message) }))
+    .filter((item) => item.text.length > 0)
   if (conversation.length === 0) return
   let total = 0
   let split = conversation.length
   let splitPrefix = ""
   let splitSuffix = ""
   for (let index = conversation.length - 1; index >= 0; index--) {
-    const next = total + Token.estimate(conversation[index])
+    const next = total + Token.estimate(conversation[index].text)
     if (next > tokens) {
       const remaining = Math.max(0, tokens - total) * 4
       if (remaining > 0) {
-        splitPrefix = conversation[index].slice(0, -remaining)
-        splitSuffix = conversation[index].slice(-remaining)
+        splitPrefix = conversation[index].text.slice(0, -remaining)
+        splitSuffix = conversation[index].text.slice(-remaining)
         split = index + 1
       }
       break
@@ -155,9 +155,11 @@ const select = (
     total = next
     split = index
   }
+  const headItems = conversation.slice(0, split)
   return {
-    head: [...conversation.slice(0, split), splitPrefix].filter(Boolean).join("\n\n"),
-    recent: [splitSuffix, ...conversation.slice(split)].filter(Boolean).join("\n\n"),
+    head: [...headItems.map((item) => item.text), splitPrefix].filter(Boolean).join("\n\n"),
+    recent: [splitSuffix, ...conversation.slice(split).map((item) => item.text)].filter(Boolean).join("\n\n"),
+    headEntries: (splitPrefix ? headItems.slice(0, -1) : headItems).map((item) => item.entry),
   }
 }
 
@@ -169,6 +171,23 @@ export const buildPrompt = (input: { readonly previousSummary?: string; readonly
     SUMMARY_TEMPLATE,
     ...input.context,
   ].join("\n\n")
+
+// Pin the most recent user instruction that is about to be folded into the
+// summary. A one-word instruction like "use Chinese" would otherwise be
+// diluted away across repeated compactions; pinning it verbatim lets it
+// survive as a standing constraint. Returns undefined when there is no user
+// message to pin.
+export const extractPinned = (entries: readonly Entry[]): string | undefined => {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const message = entries[index].message
+    if (message.type === "compaction") continue
+    if (message.type !== "user") continue
+    const text = message.text.trim()
+    if (text.length === 0) continue
+    return text
+  }
+  return undefined
+}
 
 // Decide whether a request needs compaction before the LLM call. Compact when
 // the history is at/over the watermark (progressive trigger) OR the full
@@ -246,6 +265,7 @@ export const make = (dependencies: Dependencies) => {
       reason: "auto",
       text: summary,
       recent: selected.recent,
+      pinned: extractPinned(selected.headEntries),
     })
     return true
   })
