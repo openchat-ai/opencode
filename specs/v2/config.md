@@ -353,7 +353,7 @@ Behavior affecting long-running conversations and context management.
 | ------------ | ----------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------- |
 | `compaction` | Automatic compaction, pruning, and context reserve settings | redesign | Group retained verbatim history under `keep` and rename context headroom to `buffer`. |
 
-Retain the compaction capability but redesign the less clear limits. `keep.tokens` is the token budget for recent history serialized into the textual compaction checkpoint. `buffer` is the token headroom reserved so automatic compaction triggers before the input window is exhausted.
+Retain the compaction capability but redesign the less clear limits. `keep.tokens` is the token budget for recent history serialized into the textual compaction checkpoint. `buffer` is the token headroom reserved so automatic compaction triggers before the input window is exhausted. `watermark` is the history-size budget that triggers compaction proactively (default 64K tokens) — the primary cost lever that bounds repeated-history resends to O(T).
 
 ```jsonc
 {
@@ -364,6 +364,7 @@ Retain the compaction capability but redesign the less clear limits. `keep.token
       "tokens": 2000,
     },
     "buffer": 10000,
+    "watermark": 64000,
   },
 }
 ```

@@ -110,7 +110,12 @@ Current Context Epoch follow-ups:
 
 ## Automatic Compaction
 
-Before each provider turn, the runner estimates the complete model-visible request and compares it with the selected model's context window minus absolute reserved headroom. The reserve is the greater of the requested/model output allowance and configured `compaction.buffer`. When the request exceeds that budget and older complete turns are available, the runner compacts before executing the pending turn.
+Before each provider turn, the runner compacts when either trigger fires:
+
+- **Watermark**: the estimated serialized history (`request.messages`) exceeds the configured `compaction.watermark` (default 64K tokens). This bounds the history resent every turn to ~`watermark` tokens, making the repeated-history cost O(T) instead of O(T²): history is re-bounded to `keep.tokens` plus one summary well before it can grow large.
+- **Overflow**: the complete model-visible request exceeds the model's context window minus absolute reserved headroom. The reserve is the greater of the requested/model output allowance and configured `compaction.buffer`.
+
+The watermark is the primary cost lever; the overflow trigger remains as a safety net for small-context models and pathological requests.
 
 Compaction keeps the full transcript durable while replacing its active model representation with one hidden checkpoint containing a structured rolling summary and token-bounded serialized recent context. Provider-native assistant, reasoning, and tool messages never survive across the boundary, avoiding signature and encrypted-reasoning failures when the earlier prefix changes.
 

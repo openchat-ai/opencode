@@ -11,6 +11,7 @@ import { Token } from "../util/token"
 
 const DEFAULT_BUFFER = 20_000
 const DEFAULT_KEEP_TOKENS = 8_000
+const DEFAULT_WATERMARK = 64_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const SUMMARY_OUTPUT_TOKENS = 4_096
 const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
@@ -54,6 +55,7 @@ type Settings = {
   readonly auto: boolean
   readonly buffer: number
   readonly tokens: number
+  readonly watermark: number
 }
 
 type Dependencies = {
@@ -120,8 +122,9 @@ const settings = (documents: readonly Config.Entry[]) => {
       auto: current.auto ?? result.auto,
       buffer: current.buffer ?? result.buffer,
       tokens: current.keep?.tokens ?? result.tokens,
+      watermark: current.watermark ?? result.watermark,
     }),
-    { auto: true, buffer: DEFAULT_BUFFER, tokens: DEFAULT_KEEP_TOKENS },
+    { auto: true, buffer: DEFAULT_BUFFER, tokens: DEFAULT_KEEP_TOKENS, watermark: DEFAULT_WATERMARK },
   )
 }
 
@@ -166,6 +169,30 @@ export const buildPrompt = (input: { readonly previousSummary?: string; readonly
     SUMMARY_TEMPLATE,
     ...input.context,
   ].join("\n\n")
+
+// Decide whether a request needs compaction before the LLM call. Compact when
+// the history is at/over the watermark (progressive trigger) OR the full
+// request approaches the model context limit (overflow fallback). The
+// watermark is what makes history resend cost O(T) instead of O(T^2): history
+// is re-bounded to KEEP + SUMMARY long before it can grow large.
+export const shouldCompact = (input: {
+  readonly request: Pick<LLMRequest, "system" | "messages" | "tools" | "generation">
+  readonly model: Model
+  readonly auto: boolean
+  readonly buffer: number
+  readonly watermark: number
+}) => {
+  if (!input.auto) return false
+  const context = input.model.route.defaults.limits?.context
+  if (context === undefined || context <= 0) return false
+  const output = input.request.generation?.maxTokens ?? input.model.route.defaults.limits?.output ?? 0
+  const estimateMessages = estimate({ messages: input.request.messages })
+  const nearOverflow =
+    estimate({ system: input.request.system, messages: input.request.messages, tools: input.request.tools }) >
+    context - Math.max(output, input.buffer)
+  const overWatermark = estimateMessages > input.watermark
+  return nearOverflow || overWatermark
+}
 
 export const make = (dependencies: Dependencies) => {
   const config = settings(dependencies.config)
@@ -223,13 +250,14 @@ export const make = (dependencies: Dependencies) => {
     return true
   })
   const compactIfNeeded = Effect.fn("SessionCompaction.compactIfNeeded")(function* (input: Input) {
-    if (!config.auto) return false
-    const context = input.model.route.defaults.limits?.context
-    if (context === undefined || context <= 0) return false
-    const output = input.request.generation?.maxTokens ?? input.model.route.defaults.limits?.output ?? 0
     if (
-      estimate({ system: input.request.system, messages: input.request.messages, tools: input.request.tools }) <=
-      context - Math.max(output, config.buffer)
+      !shouldCompact({
+        request: input.request,
+        model: input.model,
+        auto: config.auto,
+        buffer: config.buffer,
+        watermark: config.watermark,
+      })
     )
       return false
     return yield* compactAfterOverflow(input)
