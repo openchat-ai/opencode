@@ -26,6 +26,7 @@ import { ToolRegistry } from "../../tool/registry"
 import { ToolOutputStore } from "../../tool-output-store"
 import { SessionContextEpoch } from "../context-epoch"
 import { SessionCompaction } from "../compaction"
+import { SessionPrune } from "../prune"
 import { SessionEvent } from "../event"
 import { SessionHistory } from "../history"
 import { SessionInput } from "../input"
@@ -374,6 +375,10 @@ const layer = Layer.effect(
             yield* Effect.yieldNow
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
               return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
+            // A completed compaction moved the baseline past the old tool
+            // outputs; drop their now-summarized payloads in the background so
+            // the resumed turn is not delayed.
+            yield* SessionPrune.prune(db, { sessionID }).pipe(Effect.ignore, Effect.forkDetach)
             return yield* runTurn(sessionID, undefined, defect.transition.step)
           }),
         ),
