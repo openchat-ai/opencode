@@ -1,4 +1,5 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { afterEach, describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer, Stream } from "effect"
@@ -197,6 +198,39 @@ describe("tool.read permission paths", () => {
     }),
   )
 })
+
+// Build a minimal SessionV1.WithParts whose single part is a completed `read`
+// tool call carrying the given fingerprint in its metadata, as it would be
+// persisted in the conversation history. Only the fields consumed by
+// `findFingerprint` matter; the rest are stubbed to satisfy the schema.
+const historyMessage = (filepath: string, fingerprint: unknown): SessionV1.WithParts =>
+  ({
+    info: {
+      id: MessageID.make("msg_prior"),
+      sessionID: ctx.sessionID,
+      role: "assistant",
+      model: "test/model",
+      time: { created: 0 },
+    },
+    parts: [
+      {
+        id: "part_prior",
+        sessionID: ctx.sessionID,
+        messageID: MessageID.make("msg_prior"),
+        type: "tool",
+        callID: "call_prior",
+        tool: "read",
+        state: {
+          status: "completed",
+          input: { filePath: filepath },
+          output: "full content",
+          title: "read",
+          metadata: { fingerprint },
+          time: { start: 0, end: 0 },
+        },
+      },
+    ],
+  }) as unknown as SessionV1.WithParts
 
 describe("tool.read external_directory permission", () => {
   it.live("allows reading absolute path inside project directory", () =>
@@ -630,6 +664,66 @@ describe("tool.read loaded instructions", () => {
       expect(result.output).toContain("Test Instructions")
       expect(result.metadata.loaded).toBeDefined()
       expect(result.metadata.loaded).toContain(path.join(dir, "subdir", "AGENTS.md"))
+    }),
+  )
+})
+
+describe("tool.read dedup", () => {
+  const filepath = (dir: string) => path.join(dir, "dedup.txt")
+  const lines = Array.from({ length: 50 }, (_, i) => `line${i + 1}`).join("\n")
+
+  it.live("returns a digest on unchanged re-read instead of full content", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(filepath(dir), lines)
+
+      const first = yield* exec(dir, { filePath: filepath(dir) })
+      expect(first.output).toContain("line1")
+      expect(first.output).toContain("line50")
+      const fp = first.metadata.fingerprint
+      expect(fp).toBeDefined()
+
+      const next = { ...ctx, messages: [historyMessage(filepath(dir), fp!)] }
+      const second = yield* exec(dir, { filePath: filepath(dir) }, next)
+      expect(second.output).toContain("File unchanged")
+      expect(second.output).not.toContain("line1\n2: line2")
+      expect(second.metadata.fingerprint).toEqual(fp)
+    }),
+  )
+
+  it.live("re-reads the file when it changed since the last read", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(filepath(dir), lines)
+
+      const first = yield* exec(dir, { filePath: filepath(dir) })
+      const fp = first.metadata.fingerprint
+      expect(fp).toBeDefined()
+
+      yield* put(filepath(dir), `${lines}\nline51`)
+      const next = { ...ctx, messages: [historyMessage(filepath(dir), fp!)] }
+      const second = yield* exec(dir, { filePath: filepath(dir) }, next)
+      expect(second.output).toContain("line51")
+      expect(second.output).not.toContain("File unchanged")
+    }),
+  )
+
+  it.live("re-reads when the requested range was not covered by the prior read", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(filepath(dir), lines)
+
+      // First read only covers the head of the file.
+      const first = yield* exec(dir, { filePath: filepath(dir), limit: 10 })
+      const fp = first.metadata.fingerprint
+      expect(fp).toBeDefined()
+      expect(fp!.lineEnd).toBe(10)
+
+      // A later read beyond the covered range must hit the disk again.
+      const next = { ...ctx, messages: [historyMessage(filepath(dir), fp!)] }
+      const second = yield* exec(dir, { filePath: filepath(dir), offset: 20, limit: 5 }, next)
+      expect(second.output).toContain("20: line20")
+      expect(second.output).not.toContain("File unchanged")
     }),
   )
 })

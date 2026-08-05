@@ -1,5 +1,7 @@
 import { Effect, Option, Schema, Scope, Stream } from "effect"
+import { FileSystem } from "effect"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 import * as path from "path"
 import * as Tool from "./tool"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -18,6 +20,9 @@ const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
+
+const mtimeMs = (stat: FileSystem.File.Info) =>
+  Option.getOrElse(stat.mtime, () => new Date(0)).getTime()
 
 class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
 
@@ -55,11 +60,21 @@ type Display =
       truncated: boolean
     }
 
+type Fingerprint = {
+  path: string
+  mtimeMs: number
+  size: number
+  lineStart: number
+  lineEnd: number
+  totalLines: number
+}
+
 type Metadata = {
   preview: string
   truncated: boolean
   loaded: string[]
   display?: Display
+  fingerprint?: Fingerprint
 }
 
 export const ReadTool = Tool.define<
@@ -329,6 +344,48 @@ export const ReadTool = Tool.define<
         return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
       }
 
+      const fingerprint = findFingerprint(filepath, stat, ctx.messages)
+      const reqStart = params.offset ?? 1
+      const reqEnd = reqStart + (params.limit ?? DEFAULT_READ_LIMIT) - 1
+      const fullyRead = fingerprint ? fingerprint.lineEnd === fingerprint.totalLines : false
+      if (
+        fingerprint &&
+        reqStart >= fingerprint.lineStart &&
+        reqStart <= fingerprint.totalLines &&
+        (reqEnd <= fingerprint.lineEnd || fullyRead)
+      ) {
+        // The file is unchanged since the last time we read these lines; the
+        // full content is already in the conversation history. Returning the
+        // whole file again would resend it into the context and bloat every
+        // subsequent turn. Instead surface a short digest and let the model
+        // rely on the earlier read.
+        return {
+          title,
+          output: [
+            `<path>${filepath}</path>`,
+            `<type>file</type>`,
+            `<content>`,
+            `(File unchanged since the read at lines ${fingerprint.lineStart}-${fingerprint.lineEnd} of ${fingerprint.totalLines}. Content already shown above; skipping re-read.)`,
+            `</content>`,
+          ].join("\n"),
+          metadata: {
+            preview: `File unchanged (lines ${fingerprint.lineStart}-${fingerprint.lineEnd} of ${fingerprint.totalLines})`,
+            truncated: false,
+            loaded: [],
+            display: {
+              type: "file" as const,
+              path: filepath,
+              text: "",
+              lineStart: fingerprint.lineStart,
+              lineEnd: fingerprint.lineEnd,
+              totalLines: fingerprint.totalLines,
+              truncated: false,
+            },
+            fingerprint,
+          },
+        }
+      }
+
       const file = yield* lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset || 1 })
       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
         return yield* Effect.fail(
@@ -373,9 +430,43 @@ export const ReadTool = Tool.define<
             totalLines: file.count,
             truncated,
           },
+          fingerprint: {
+            path: filepath,
+            mtimeMs: mtimeMs(stat),
+            size: Number(stat.size),
+            lineStart: file.offset,
+            lineEnd: last,
+            totalLines: file.count,
+          },
         },
       }
     })
+
+    // Scan the conversation history for the most recent read of the same file
+    // and return its fingerprint when the file is unchanged since then.
+    const findFingerprint = (
+      filepath: string,
+      stat: FileSystem.File.Info,
+      messages: SessionV1.WithParts[],
+    ): Fingerprint | undefined => {
+      for (const msg of messages) {
+        for (const part of msg.parts) {
+          if (part.type !== "tool" || part.tool !== "read") continue
+          if (part.state.status !== "completed") continue
+          // A compacted read no longer has its content in the conversation, so
+          // a dedup digest would point the model at text it cannot see. Treat
+          // it as a miss and re-read from disk.
+          if (part.state.time.compacted) continue
+          const fp = part.state.metadata?.fingerprint
+          if (!fp || typeof fp !== "object") continue
+          const prior = fp as Fingerprint
+          if (prior.path !== filepath) continue
+          if (prior.mtimeMs !== mtimeMs(stat) || prior.size !== Number(stat.size)) continue
+          return prior
+        }
+      }
+      return undefined
+    }
 
     return {
       description: DESCRIPTION,
