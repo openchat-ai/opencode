@@ -7,6 +7,10 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./grep.txt"
 import * as Tool from "./tool"
 
+// Cap the aggregate output at the same budget as read (50 KB) so a broad grep
+// cannot inject ~50K tokens into context in one call (100 rows x 2 KB line cap).
+const MAX_BYTES = 50 * 1024
+
 export const Parameters = Schema.Struct({
   pattern: Schema.String.annotate({ description: "The regex pattern to search for in file contents" }),
   path: Schema.optional(Schema.String).annotate({
@@ -78,36 +82,44 @@ export const GrepTool = Tool.define(
           }))
 
           const limit = 100
-          const truncated = rows.length === limit
-          const final = rows
-          if (final.length === 0) return empty
-
+          const rowTruncated = rows.length === limit
           const total = rows.length
-          const hasMore = truncated || result.length === limit
-          const output = [`Found ${total} matches${hasMore ? " (more matches available)" : ""}`]
 
+          // Build the grouped output under a hard byte budget (same 50 KB as
+          // read). Without it a broad grep can inject up to ~200 KB (~50K
+          // tokens) into a single context window.
+          const byteSize = (s: string) => Buffer.byteLength(s, "utf8")
+          const out: string[] = []
           let current = ""
-          for (const match of final) {
-            if (current !== match.path) {
-              if (current !== "") output.push("")
-              current = match.path
-              output.push(`${match.path}:`)
+          let bytes = 0
+          let byteTruncated = false
+          for (const match of rows) {
+            const groupHeader = current !== match.path ? `${current !== "" ? "\n" : ""}${match.path}:` : ""
+            const line = `  Line ${match.line}: ${match.text}`
+            const add = `${groupHeader}${groupHeader === "" ? "" : "\n"}${line}`
+            if (bytes + byteSize(add) > MAX_BYTES) {
+              byteTruncated = true
+              break
             }
-            output.push(`  Line ${match.line}: ${match.text}`)
+            bytes += byteSize(add)
+            current = match.path
+            out.push(add)
           }
-
-          if (truncated) {
-            output.push("")
-            output.push("(Results truncated. Consider using a more specific path or pattern.)")
+          if (byteTruncated) {
+            out.push("")
+            out.push(`(Output capped at ${MAX_BYTES / 1024} KB. Use a more specific path or pattern to narrow results.)`)
+          } else if (rowTruncated) {
+            out.push("")
+            out.push("(Results truncated. Consider using a more specific path or pattern.)")
           }
 
           return {
             title: params.pattern,
             metadata: {
               matches: total,
-              truncated,
+              truncated: byteTruncated || rowTruncated,
             },
-            output: output.join("\n"),
+            output: [`Found ${total} matches${rowTruncated ? " (more matches available)" : ""}`, ...out].join("\n"),
           }
         }).pipe(Effect.orDie),
     }

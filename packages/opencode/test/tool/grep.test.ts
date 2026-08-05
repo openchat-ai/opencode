@@ -131,6 +131,23 @@ describe("tool.grep", () => {
     }),
   )
 
+  it.instance("caps aggregate output at 50 KB", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      // 30 lines x 4 KB each -> ~120 KB of matching text, far over the 50 KB cap.
+      const huge = Array.from({ length: 30 }, (_, i) => `needle ${i} ${"x".repeat(4000)}`).join("\n")
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "huge.txt"), huge))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: test.directory, include: "*.txt" }, ctx)
+
+      expect(result.metadata.matches).toBe(30)
+      expect(result.metadata.truncated).toBe(true)
+      expect(Buffer.byteLength(result.output, "utf8")).toBeLessThan(50 * 1024 + 512)
+      expect(result.output).toContain("(Output capped at 50 KB")
+    }),
+  )
+
   it.instance("does not report an unknown total when results are truncated", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
