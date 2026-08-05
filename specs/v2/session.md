@@ -98,6 +98,8 @@ Session                            Epoch
 
 Ambient project discovery canonicalizes and contains traversal within the project root and honors `OPENCODE_DISABLE_PROJECT_CONFIG`. An unavailable observation preserves the previously admitted value. A confirmed partial instruction removal emits the complete remaining aggregate with explicit supersession text; removing the final instruction emits a revocation message.
 
+Loaded AGENTS.md content is partitioned before rendering: `## `-headed sections carrying a trailing `(YYYY-MM-DD)` date older than the decay window (default 90 days) are grouped under a "Historical lessons" header and token-capped, so stale reactive iron rules stop crowding active instructions without ever being lost. Undated sections (standing constraints, current checklists) never decay; project-scoped files already decay on project switch.
+
 Current Context Epoch follow-ups:
 
 - Add configured, remote, and nested instruction sources with explicit precedence and removal semantics.
