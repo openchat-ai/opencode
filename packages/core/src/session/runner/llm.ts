@@ -32,6 +32,7 @@ import { SessionHistory } from "../history"
 import { SessionInput } from "../input"
 import { SessionSchema } from "../schema"
 import { SessionStore } from "../store"
+import { REPEAT_THRESHOLD, detectRepeatedToolCalls } from "./repeat-guard"
 import { type RunError, Service } from "./index"
 import { SessionRunnerModel } from "./model"
 import { createLLMEventPublisher } from "./publish-llm-event"
@@ -203,13 +204,24 @@ const layer = Layer.effect(
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
+      const repeated = detectRepeatedToolCalls(context)
       const request = LLM.request({
         model,
         providerOptions: { openai: { promptCacheKey } },
         system: [agent.info?.system, system.baseline]
           .filter((part): part is string => part !== undefined && part.length > 0)
           .map(SystemPart.make),
-        messages: [...toLLMMessages(context, model), ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : [])],
+        messages: [
+          ...toLLMMessages(context, model),
+          ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []),
+          ...(repeated
+            ? [
+                Message.user(
+                  `You have called ${repeated.tool} with the same input ${REPEAT_THRESHOLD} times in a row and it is not making progress. Do not repeat it. Reconsider your approach: read the error, adjust the input, or pick a different tool.`,
+                ),
+              ]
+            : []),
+        ],
         tools: toolMaterialization?.definitions ?? [],
         toolChoice: isLastStep ? "none" : undefined,
       })
