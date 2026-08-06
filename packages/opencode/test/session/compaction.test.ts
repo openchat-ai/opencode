@@ -549,6 +549,92 @@ describe("session.compaction.isOverflow", () => {
   )
 })
 
+describe("session.compaction.isWatermark", () => {
+  it.live(
+    "returns true when model-visible history exceeds the default watermark",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const ssn = yield* SessionNs.Service
+        const model = createModel({ context: 1_000_000, output: 32_000 })
+
+        const info = yield* ssn.create({})
+        // ~70K tokens of user text: 280K chars / 4 = 70K > 64K default watermark
+        const big = "x".repeat(280_000)
+        yield* createUserMessage(info.id, big)
+
+        const msgs = yield* ssn.messages({ sessionID: info.id })
+        expect(yield* compact.isWatermark({ messages: msgs, model })).toBe(true)
+      }),
+    ),
+  )
+
+  it.live(
+    "returns false when model-visible history is below the watermark",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const ssn = yield* SessionNs.Service
+        const model = createModel({ context: 1_000_000, output: 32_000 })
+
+        const info = yield* ssn.create({})
+        yield* createUserMessage(info.id, "short message")
+
+        const msgs = yield* ssn.messages({ sessionID: info.id })
+        expect(yield* compact.isWatermark({ messages: msgs, model })).toBe(false)
+      }),
+    ),
+  )
+
+  it.live(
+    "honors a configured watermark override",
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const compact = yield* SessionCompaction.Service
+          const ssn = yield* SessionNs.Service
+          const model = createModel({ context: 1_000_000, output: 32_000 })
+
+          const info = yield* ssn.create({})
+          // 40K tokens: 160K chars / 4 = 40K. Default 64K would say false;
+          // configured 30K says true.
+          yield* createUserMessage(info.id, "y".repeat(160_000))
+
+          const msgs = yield* ssn.messages({ sessionID: info.id })
+          expect(yield* compact.isWatermark({ messages: msgs, model })).toBe(true)
+        }),
+      {
+        config: {
+          compaction: { watermark: 30_000 },
+        },
+      },
+    ),
+  )
+
+  it.live(
+    "returns false when compaction.auto is disabled",
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const compact = yield* SessionCompaction.Service
+          const ssn = yield* SessionNs.Service
+          const model = createModel({ context: 1_000_000, output: 32_000 })
+
+          const info = yield* ssn.create({})
+          yield* createUserMessage(info.id, "x".repeat(280_000))
+
+          const msgs = yield* ssn.messages({ sessionID: info.id })
+          expect(yield* compact.isWatermark({ messages: msgs, model })).toBe(false)
+        }),
+      {
+        config: {
+          compaction: { auto: false },
+        },
+      },
+    ),
+  )
+})
+
 describe("session.compaction.create", () => {
   it.live(
     "creates a compaction user message and part",
@@ -919,6 +1005,112 @@ describe("session.compaction.process", () => {
         expect(last.parts[0].text).toContain("Continue if you have next steps")
       }
     }),
+  )
+
+  itCompaction.instance(
+    "persists model-derived standing instructions as pinned",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Objective
+- build a parser
+
+## Important Details
+- (none)
+
+## Standing Instructions
+- from now on, always reply in Chinese
+
+## Work State
+### Completed
+- (none)
+
+### Active
+- (none)
+
+### Blocked
+- (none)
+
+## Next Move
+1. (none)
+
+## Relevant Files
+- (none)`),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "first")
+        yield* createUserMessage(session.id, "请一直说汉语")
+        yield* createSummaryCompaction(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        expect(parent).toBeTruthy()
+        yield* SessionCompaction.use.process({
+          parentID: parent!,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        })
+
+        const part = yield* readCompactionPart(session.id)
+        expect(part?.type).toBe("compaction")
+        expect(part?.pinned).toBe("- from now on, always reply in Chinese")
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "does not pin a one-off query when the summary has no standing instructions",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Objective
+- build a parser
+
+## Important Details
+- (none)
+
+## Work State
+### Completed
+- (none)
+
+### Active
+- (none)
+
+### Blocked
+- (none)
+
+## Next Move
+1. (none)
+
+## Relevant Files
+- (none)`),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "请一直说汉语")
+        yield* createSummaryCompaction(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        expect(parent).toBeTruthy()
+        yield* SessionCompaction.use.process({
+          parentID: parent!,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        })
+
+        const part = yield* readCompactionPart(session.id)
+        expect(part?.type).toBe("compaction")
+        expect(part?.pinned).toBeUndefined()
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
+    },
+    { git: true },
   )
 
   itCompaction.instance(

@@ -319,6 +319,36 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("renders pinned standing instructions inside the compaction prompt", async () => {
+    const messageID = "m-user"
+
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(messageID),
+        parts: [
+          {
+            ...basePart(messageID, "p1"),
+            type: "compaction",
+            auto: true,
+            pinned: "请一直说汉语",
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "What did we do so far?\n\n<standing-instructions>\n请一直说汉语\n</standing-instructions>",
+          },
+        ],
+      },
+    ])
+  })
+
   test("converts assistant tool completion into tool-call + tool-result messages with attachments", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"

@@ -228,7 +228,11 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         if (part.type === "compaction") {
           userMessage.parts.push({
             type: "text",
-            text: "What did we do so far?",
+            text:
+              "What did we do so far?" +
+              (part.pinned
+                ? `\n\n<standing-instructions>\n${part.pinned}\n</standing-instructions>`
+                : ""),
           })
         }
         if (part.type === "subtask") {

@@ -164,6 +164,10 @@ export const Info = Schema.Struct({
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
       }),
+      watermark: Schema.optional(NonNegativeInt).annotate({
+        description:
+          "Estimated tokens of model-visible history at which auto compaction fires early, before context fills (default: 64000). Bounds per-turn history resend to O(T) instead of O(T^2).",
+      }),
     }),
   ),
   experimental: Schema.optional(

@@ -20,7 +20,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { buildPrompt } from "@opencode-ai/core/session/compaction"
+import { buildPrompt, extractPinned } from "@opencode-ai/core/session/compaction"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
 
 export const Event = SessionCompactionEvent
@@ -30,6 +30,7 @@ export const PRUNE_PROTECT = 40_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const PRUNE_PROTECTED_TOOLS = ["skill"]
 const DEFAULT_TAIL_TURNS = 2
+const DEFAULT_WATERMARK = 64_000
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
 const MAX_PRESERVE_RECENT_TOKENS = 8_000
 type Turn = {
@@ -57,6 +58,29 @@ function summaryText(message: SessionV1.WithParts) {
     .join("\n\n")
     .trim()
   return text || undefined
+}
+
+// Cheap raw token estimate for the watermark check: concatenates text-bearing
+// parts without the provider model transform. Close enough to bound history
+// resend; exactness matters only near the threshold, where a re-run of the real
+// estimate inside `process`/`select` makes the final call.
+function rawText(messages: SessionV1.WithParts[]) {
+  let length = 0
+  for (const message of messages) {
+    if (message.info.role === "user") {
+      for (const part of message.parts) {
+        if (part.type === "text") length += part.text.length
+      }
+      continue
+    }
+    if (message.info.role !== "assistant") continue
+    for (const part of message.parts) {
+      if (part.type === "text") length += part.text.length
+      else if (part.type === "tool") length += JSON.stringify(part.state).length
+      else if (part.type === "reasoning") length += part.text.length
+    }
+  }
+  return length
 }
 
 function completedCompactions(messages: SessionV1.WithParts[]) {
@@ -132,6 +156,10 @@ export interface Interface {
     tokens: SessionV1.Assistant["tokens"]
     model: Provider.Model
   }) => Effect.Effect<boolean>
+  readonly isWatermark: (input: {
+    messages: SessionV1.WithParts[]
+    model: Provider.Model
+  }) => Effect.Effect<boolean>
   readonly prune: (input: { sessionID: SessionID }) => Effect.Effect<void>
   readonly process: (input: {
     parentID: MessageID
@@ -175,6 +203,26 @@ const layer = Layer.effect(
         model: input.model,
         outputTokenMax: flags.outputTokenMax,
       })
+    })
+
+    // Fire compaction early when the model-visible history already exceeds the
+    // watermark, before it approaches the context limit. This is the V1 twin of
+    // the V2 shouldCompact watermark lever: it re-bounds per-turn history resend
+    // to ~watermark tokens (O(T) instead of O(T^2)) at the cost of more summary
+    // rewrites, which stay cheap because each re-reads only the evicted span.
+    const isWatermark = Effect.fn("SessionCompaction.isWatermark")(function* (input: {
+      messages: SessionV1.WithParts[]
+      model: Provider.Model
+    }) {
+      const cfg = yield* config.get()
+      if (cfg.compaction?.auto === false) return false
+      if (input.model.limit.context === 0) return false
+      const watermark = cfg.compaction?.watermark ?? DEFAULT_WATERMARK
+      if (watermark <= 0) return false
+      // Cheap raw-length estimate, not the full model transform: this runs every
+      // turn, so it must stay ~O(total text) with no provider-specific work.
+      const size = Math.round(rawText(input.messages) / 4)
+      return size >= watermark
     })
 
     const estimate = Effect.fn("SessionCompaction.estimate")(function* (input: {
@@ -412,10 +460,26 @@ const layer = Layer.effect(
         return "stop"
       }
 
-      if (compactionPart && selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
+      let pinned: string | undefined
+      if (compactionPart) {
+        const summaryMessage = yield* session
+          .messages({ sessionID: input.sessionID })
+          .pipe(
+            Effect.map((messages) => messages.find((message) => message.info.id === msg.id)),
+            Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)),
+          )
+        pinned = summaryMessage ? extractPinned(summaryText(summaryMessage) ?? "") : undefined
+      }
+
+      if (
+        compactionPart &&
+        ((selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) ||
+          pinned !== compactionPart.pinned)
+      ) {
         yield* session.updatePart({
           ...compactionPart,
           tail_start_id: selected.tail_start_id,
+          pinned,
         })
       }
 
@@ -537,6 +601,7 @@ const layer = Layer.effect(
 
     return Service.of({
       isOverflow,
+      isWatermark,
       prune,
       process: processCompaction,
       create,
