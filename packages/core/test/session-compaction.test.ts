@@ -1,72 +1,49 @@
 import { expect, test } from "bun:test"
-import { DateTime } from "effect"
 import { SessionCompaction } from "@opencode-ai/core/session/compaction"
-import { SessionMessage } from "@opencode-ai/core/session/message"
 
-const entry = (seq: number, message: SessionMessage.Message) => ({ seq, message })
-const at = (millis: number) => DateTime.makeUnsafe(millis)
-const id = (value: string) => value as SessionMessage.ID
-const modelRef = { id: "test" as never, providerID: "test" as never }
+test("extractPinned returns the Standing Instructions section from a summary", () => {
+  const summary = `## Objective
+- build a parser
 
-test("extractPinned returns the last non-empty user message", () => {
-  const user1 = SessionMessage.User.make({
-    id: id("msg_1"),
-    type: "user",
-    text: "refactor the parser",
-    time: { created: at(1) },
-  })
-  const user2 = SessionMessage.User.make({
-    id: id("msg_2"),
-    type: "user",
-    text: "from now on, always reply in Chinese",
-    time: { created: at(2) },
-  })
-  const pinned = SessionCompaction.extractPinned([entry(1, user1), entry(2, user2)])
-  expect(pinned).toBe("from now on, always reply in Chinese")
+## Important Details
+- (none)
+
+## Standing Instructions
+- from now on, always reply in Chinese
+- use tabs for indentation
+
+## Work State
+### Completed
+- (none)
+`
+  expect(SessionCompaction.extractPinned(summary)).toBe(
+    "- from now on, always reply in Chinese\n- use tabs for indentation",
+  )
 })
 
-test("extractPinned skips assistant and empty user messages", () => {
-  const assistant = SessionMessage.Assistant.make({
-    id: id("msg_3"),
-    type: "assistant",
-    agent: "build",
-    model: modelRef,
-    content: [],
-    time: { created: at(3) },
-  })
-  const empty = SessionMessage.User.make({
-    id: id("msg_4"),
-    type: "user",
-    text: "   ",
-    time: { created: at(4) },
-  })
-  const user = SessionMessage.User.make({
-    id: id("msg_5"),
-    type: "user",
-    text: "keep this one",
-    time: { created: at(5) },
-  })
-  const pinned = SessionCompaction.extractPinned([entry(1, assistant), entry(2, empty), entry(3, user)])
-  expect(pinned).toBe("keep this one")
+test("extractPinned returns undefined when the section is (none)", () => {
+  const summary = `## Objective
+- build a parser
+
+## Standing Instructions
+(none)
+
+## Work State
+### Completed
+- (none)
+`
+  expect(SessionCompaction.extractPinned(summary)).toBeUndefined()
 })
 
-test("extractPinned skips compaction messages but pins the oldest user instruction", () => {
-  const compaction = SessionMessage.Compaction.make({
-    id: id("msg_6"),
-    type: "compaction",
-    reason: "auto",
-    summary: "earlier",
-    recent: "",
-    time: { created: at(6) },
-  })
-  const user = SessionMessage.User.make({
-    id: id("msg_7"),
-    type: "user",
-    text: "remember the ordering rule",
-    time: { created: at(7) },
-  })
-  const pinned = SessionCompaction.extractPinned([entry(1, compaction), entry(2, user)])
-  expect(pinned).toBe("remember the ordering rule")
+test("extractPinned returns undefined when the section is missing", () => {
+  const summary = `## Objective
+- build a parser
+
+## Work State
+### Completed
+- (none)
+`
+  expect(SessionCompaction.extractPinned(summary)).toBeUndefined()
 })
 
 test("compaction prompt preserves detailed work state and relevant files", () => {
@@ -76,6 +53,7 @@ test("compaction prompt preserves detailed work state and relevant files", () =>
   expect(prompt).toContain("### Active")
   expect(prompt).toContain("### Blocked")
   expect(prompt).toContain("## Relevant Files")
+  expect(prompt).toContain("## Standing Instructions")
 })
 
 test("compaction describes tool media without embedding base64", () => {

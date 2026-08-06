@@ -22,6 +22,9 @@ const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <te
 ## Important Details
 - [constraints/preferences, decisions and why, important facts/assumptions, exact context needed to continue, or "(none)"]
 
+## Standing Instructions
+- [standing user instructions that must survive future compactions, such as language, tone, formatting, or workflow rules; otherwise "(none)"]
+
 ## Work State
 ### Completed
 - [finished work, verified facts, or changes made; otherwise "(none)"]
@@ -172,21 +175,25 @@ export const buildPrompt = (input: { readonly previousSummary?: string; readonly
     ...input.context,
   ].join("\n\n")
 
-// Pin the most recent user instruction that is about to be folded into the
-// summary. A one-word instruction like "use Chinese" would otherwise be
-// diluted away across repeated compactions; pinning it verbatim lets it
-// survive as a standing constraint. Returns undefined when there is no user
-// message to pin.
-export const extractPinned = (entries: readonly Entry[]): string | undefined => {
-  for (let index = entries.length - 1; index >= 0; index--) {
-    const message = entries[index].message
-    if (message.type === "compaction") continue
-    if (message.type !== "user") continue
-    const text = message.text.trim()
-    if (text.length === 0) continue
-    return text
+// Extract standing instructions from the summary produced by the compaction
+// model. The summary template asks the model to record user instructions that
+// must survive compaction (language, tone, formatting, workflow rules) under a
+// "Standing Instructions" section. This replaces the old heuristic that pinned
+// the last user message verbatim, which could not tell a persistent constraint
+// like "use Chinese" from a one-off query. Returns undefined when the section
+// is absent or empty.
+export const extractPinned = (summary: string): string | undefined => {
+  const lines = summary.split("\n")
+  const start = lines.findIndex((line) => line.trim() === "## Standing Instructions")
+  if (start === -1) return undefined
+  const content: string[] = []
+  for (let index = start + 1; index < lines.length; index++) {
+    if (lines[index].trim().startsWith("## ")) break
+    content.push(lines[index])
   }
-  return undefined
+  const text = content.join("\n").trim()
+  if (text.length === 0 || text === "(none)") return undefined
+  return text
 }
 
 // Decide whether a request needs compaction before the LLM call. Compact when
@@ -265,7 +272,7 @@ export const make = (dependencies: Dependencies) => {
       reason: "auto",
       text: summary,
       recent: selected.recent,
-      pinned: extractPinned(selected.headEntries),
+      pinned: extractPinned(summary),
     })
     return true
   })
