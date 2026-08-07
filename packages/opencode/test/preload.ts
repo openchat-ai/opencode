@@ -10,25 +10,33 @@ import { afterAll } from "bun:test"
 const dir = path.join(os.tmpdir(), "opencode-test-data-" + process.pid)
 await fs.mkdir(dir, { recursive: true })
 afterAll(async () => {
-  const { AppRuntime } = await import("../src/effect/app-runtime")
-  await AppRuntime.dispose()
-
   const busy = (error: unknown) =>
     typeof error === "object" && error !== null && "code" in error && error.code === "EBUSY"
-  const rm = async (left: number): Promise<void> => {
+  const rm = async (left: number): Promise<boolean> => {
     Bun.gc(true)
     await sleep(100)
-    return fs.rm(dir, { recursive: true, force: true }).catch((error) => {
-      if (!busy(error)) throw error
-      if (left <= 1 && process.platform !== "win32") throw error
-      if (left <= 1) return
-      return rm(left - 1)
-    })
+    return fs.rm(dir, { recursive: true, force: true })
+      .then(() => true)
+      .catch((error) => {
+        if (!busy(error)) throw error
+        if (left <= 1 && process.platform !== "win32") throw error
+        if (left <= 1) return false
+        return rm(left - 1)
+      })
   }
 
-  // Windows can keep SQLite WAL handles alive until GC finalizers run, so we
-  // force GC and retry teardown to avoid flaky EBUSY in test cleanup.
-  await rm(30)
+  // Importing app-runtime cold-loads the entire Effect layer graph (~7s on
+  // Windows), which exceeds the 5s hook timeout for tests that never touch
+  // src/. Only import and dispose when teardown is actually busy, meaning a
+  // test started the runtime in this process (so the import is cached).
+  const removed = await rm(3)
+  if (!removed) {
+    const { AppRuntime } = await import("../src/effect/app-runtime")
+    await AppRuntime.dispose()
+    // Windows can keep SQLite WAL handles alive until GC finalizers run, so we
+    // force GC and retry teardown to avoid flaky EBUSY in test cleanup.
+    await rm(30)
+  }
 })
 
 process.env["XDG_DATA_HOME"] = path.join(dir, "share")
