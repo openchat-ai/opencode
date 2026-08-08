@@ -368,10 +368,10 @@ const succeedVoid = (deferred: Deferred.Deferred<void>) => {
   Effect.runSync(Deferred.succeed(deferred, void 0).pipe(Effect.ignore))
 }
 
-const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string) {
+const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string, id = MessageID.ascending()) {
   const session = yield* Session.Service
   const msg = yield* session.updateMessage({
-    id: MessageID.ascending(),
+    id,
     role: "user",
     sessionID,
     agent: "build",
@@ -388,11 +388,14 @@ const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: strin
   return msg
 })
 
-const seed = Effect.fn("test.seed")(function* (sessionID: SessionID, opts?: { finish?: string }) {
+const seed = Effect.fn("test.seed")(function* (
+  sessionID: SessionID,
+  opts?: { finish?: string; userID?: MessageID; assistantID?: MessageID },
+) {
   const session = yield* Session.Service
-  const msg = yield* user(sessionID, "hello")
+  const msg = yield* user(sessionID, "hello", opts?.userID)
   const assistant: SessionV1.Assistant = {
-    id: MessageID.ascending(),
+    id: opts?.assistantID ?? MessageID.ascending(),
     role: "assistant",
     parentID: msg.id,
     sessionID,
@@ -456,6 +459,26 @@ noLLMServer.instance(
       const result = yield* prompt.loop({ sessionID: chat.id })
       expect(result.info.role).toBe("assistant")
       if (result.info.role === "assistant") expect(result.info.finish).toBe("stop")
+    }),
+  { config: cfg },
+)
+
+noLLMServer.instance(
+  "loop exits when a client-generated user id sorts after its server assistant id",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const seeded = yield* seed(chat.id, {
+        finish: "stop",
+        userID: MessageID.make("msg_ffff_client_clock"),
+        assistantID: MessageID.make("msg_0000_server_clock"),
+      })
+
+      expect(seeded.assistant.id < seeded.user.id).toBe(true)
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.id).toBe(seeded.assistant.id)
     }),
   { config: cfg },
 )
@@ -630,6 +653,61 @@ it.instance("loop surfaces content-filter finishes as session errors", () =>
     }
     expect(result.parts).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: "text", text: "partial response" })]),
+    )
+  }),
+)
+
+// This verifies end-to-end recovery; the error and one-continuation decisions are pinned by the following cases.
+it.instance("loop completes end-to-end recovery after a recoverable length finish", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+
+    yield* llm.push(reply().text("partial").length(), reply().text("complete").stop())
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    expect(yield* llm.hits).toHaveLength(2)
+    expect(result.info).toMatchObject({ role: "assistant", finish: "stop" })
+    expect(result.parts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "text", text: "complete" })]),
+    )
+  }),
+)
+
+it.instance("loop surfaces reasoning-only length finish as an error", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+
+    yield* llm.push(reply().reason("unfinished reasoning").length())
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: result.info.id })
+    expect(yield* llm.hits).toHaveLength(1)
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") {
+      expect(result.info).toMatchObject({
+        finish: "length",
+        error: { name: "MessageOutputLengthError", data: {} },
+      })
+      expect(stored.info).toMatchObject({ error: result.info.error })
+    }
+    expect(result.parts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "reasoning", text: "unfinished reasoning" })]),
     )
   }),
 )
@@ -1126,6 +1204,89 @@ it.instance("cancel records MessageAbortedError on interrupted process", () =>
       }
     }
   }),
+)
+
+it.instance(
+  "cancel restarts the loop for queued input stranded behind the aborted turn",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const status = yield* SessionStatus.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      yield* seed(chat.id)
+
+      yield* llm.hang
+      yield* user(chat.id, "in-flight question")
+
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* llm.wait(1)
+      yield* waitForBusy(chat.id)
+
+      // TUI "queued" input is a user message persisted while the turn runs.
+      yield* user(chat.id, "queued question")
+
+      yield* prompt.cancel(chat.id)
+      const exit = yield* Fiber.await(fiber)
+      expect(Exit.isSuccess(exit)).toBe(true)
+      const abortedID = Exit.isSuccess(exit) && exit.value.info.role === "assistant" ? exit.value.info.id : undefined
+      expect(abortedID).toBeDefined()
+
+      // A fresh loop must answer the queued message: a finished assistant
+      // reply newer than the aborted one appears (the single hanging
+      // response is consumed by the aborted turn, so the restarted turn
+      // lands on the server's default reply).
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const msgs = yield* sessions.messages({ sessionID: chat.id })
+          const answered = msgs.find(
+            (msg) =>
+              msg.info.role === "assistant" &&
+              msg.info.id > abortedID! &&
+              msg.info.finish !== undefined,
+          )
+          return answered === undefined ? undefined : (true as const)
+        }),
+        "queued input was never answered after cancel",
+        "3 seconds",
+      )
+      expect((yield* status.get(chat.id)).type).toBe("idle")
+    }),
+  10_000,
+)
+
+it.instance(
+  "cancel without queued input does not restart the loop",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const status = yield* SessionStatus.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      yield* seed(chat.id)
+
+      yield* llm.hang
+      const inflight = yield* user(chat.id, "in-flight question")
+
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* llm.wait(1)
+      yield* waitForBusy(chat.id)
+      yield* prompt.cancel(chat.id)
+      yield* Fiber.await(fiber)
+
+      // Only the interrupted (in-flight) question existed 鈥?nothing was
+      // queued behind it, so no new turn may start and nothing gets answered.
+      yield* Effect.sleep("500 millis")
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      const answered = msgs.filter(
+        (msg) => msg.info.role === "assistant" && msg.info.id > inflight.id && msg.info.finish !== undefined,
+      )
+      expect(answered).toHaveLength(0)
+      expect((yield* status.get(chat.id)).type).toBe("idle")
+    }),
+  10_000,
 )
 
 raceNoLLMServer.instance(

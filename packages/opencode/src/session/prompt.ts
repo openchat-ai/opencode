@@ -54,6 +54,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
+import { LoopDetection } from "./loop-detection"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
 
@@ -152,6 +153,21 @@ const layer = Layer.effect(
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
       yield* state.cancel(sessionID)
+      // Input admitted while the aborted turn was running ("queued" messages)
+      // is persisted as user messages behind the last assistant one. Without a
+      // fresh loop those stay in history forever, never answered 鈥?restart the
+      // loop for them instead of dropping the queue on the floor.
+      const messages = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.catch(() => Effect.succeed([] as SessionV1.WithParts[])),
+      )
+      const { user: lastUser, assistant: lastAssistant } = MessageV2.latest(messages)
+      if (lastUser !== undefined && (lastAssistant === undefined || lastUser.id > lastAssistant.id)) {
+        yield* Effect.logInfo("cancel restarting loop for stranded queued input", {
+          "session.id": sessionID,
+        })
+        yield* loop({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
+      }
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
@@ -1083,6 +1099,14 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        // Turn-scoped marker shared across loop steps: a tool continuation
+        // creates a new assistant message and processor handle, but output
+        // produced by an earlier step still belongs to the same turn.
+        const turnGenerated = { value: false }
+        // Consecutive provider context-overflow -> compaction cycles with no
+        // successful turn in between. Bounds the overflow-compaction retry so a
+        // summary that fails to shrink the request cannot loop forever.
+        let overflowCompactions = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1110,9 +1134,11 @@ const layer = Layer.effect(
 
           if (
             lastAssistant?.finish &&
-            !["tool-calls"].includes(lastAssistant.finish) &&
+            // A recoverable length finish must reach the continuation decision below;
+            // otherwise this history reload exits before the extra provider turn can run.
+            !["tool-calls", "length"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
-            lastUser.id < lastAssistant.id
+            lastAssistant.parentID === lastUser.id
           ) {
             const orphan = lastAssistantMsg?.parts.find(
               (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),
@@ -1191,6 +1217,7 @@ const layer = Layer.effect(
             Effect.provideService(FSUtil.Service, fsys),
             Effect.provideService(Session.Service, sessions),
           )
+          msgs = LoopDetection.apply(msgs)
 
           const msg: SessionV1.Assistant = {
             id: MessageID.ascending(),
@@ -1224,6 +1251,7 @@ const layer = Layer.effect(
               assistantMessage: msg,
               sessionID,
               model,
+              generated: turnGenerated,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
@@ -1301,6 +1329,23 @@ const layer = Layer.effect(
               return "break" as const
             }
 
+            if (handle.message.finish === "length") {
+              // A length finish truncates provider output. Persisted parts identify
+              // text or tools worth one continuation; reasoning-only output must
+              // surface an error instead of ending silently. The previous finish
+              // bounds this to one attempt without adding loop state.
+              const current = yield* MessageV2.get({ sessionID, messageID: handle.message.id }).pipe(
+                Effect.provideService(Database.Service, database),
+                Effect.orElseSucceed(() => undefined),
+              )
+              const usable = current?.parts.some((part) => part.type === "text" || part.type === "tool") ?? false
+              if (usable && lastAssistant?.finish !== "length") return "continue" as const
+
+              handle.message.error = new SessionV1.OutputLengthError({}).toObject()
+              yield* sessions.updateMessage(handle.message)
+              return "break" as const
+            }
+
             const finished = handle.message.finish && !["tool-calls", "unknown"].includes(handle.message.finish)
             if (finished && !handle.message.error) {
               // Surface any content-filter finish (e.g. Anthropic stop_reason:
@@ -1327,6 +1372,17 @@ const layer = Layer.effect(
 
             if (result === "stop") return "break" as const
             if (result === "compact") {
+              overflowCompactions++
+              if (overflowCompactions > 2) {
+                handle.message.error = new SessionV1.ContextOverflowError({
+                  message:
+                    "Context still exceeds the model limit after repeated compaction attempts. Stopping to avoid a compaction loop.",
+                }).toObject()
+                handle.message.finish = "error"
+                yield* sessions.updateMessage(handle.message)
+                yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
+                return "break" as const
+              }
               yield* compaction.create({
                 sessionID,
                 agent: lastUser.agent,
@@ -1334,6 +1390,8 @@ const layer = Layer.effect(
                 auto: true,
                 overflow: !handle.message.finish,
               })
+            } else {
+              overflowCompactions = 0
             }
             return "continue" as const
           }).pipe(

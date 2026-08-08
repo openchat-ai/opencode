@@ -51,6 +51,10 @@ type Input = {
   assistantMessage: SessionV1.Assistant
   sessionID: SessionID
   model: Provider.Model
+  // Turn-scoped marker shared across steps (tool continuations create a new
+  // assistant message and a new handle). Lets the empty-response retry check
+  // see output produced by an earlier step of the same turn.
+  generated?: { value: boolean }
 }
 
 export interface Interface {
@@ -113,6 +117,7 @@ const layer = Layer.effect(
         reasoningMap: {},
       }
       let aborted = false
+      const generated = input.generated ?? { value: false }
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
@@ -433,6 +438,35 @@ const layer = Layer.effect(
             return
 
           case "step-finish": {
+            // A stream that ended without a provider finish frame (e.g. an
+            // upstream SSE connection was cut mid-turn) surfaces an "error"
+            // finish. That is an interrupted generation — fail the turn so the
+            // caller (opencode run, the loop, integrations) does not treat the
+            // truncated output as a successful completion (issue #39968).
+            if (value.reason === "error") {
+              // A completely empty response (no text, reasoning, or tool
+              // activity) is retryable rather than a hard failure: it is not
+              // truncated output, it is a provider hiccup worth one retry.
+              // `generated` is turn-scoped so output produced by an earlier
+              // tool-call step still marks this turn as non-empty.
+              if (!generated.value) {
+                yield* new SessionRetry.EmptyResponseError({
+                  message: "The model returned an empty response with an unknown finish reason",
+                })
+              }
+              ctx.assistantMessage.finish = "error"
+              ctx.assistantMessage.error = new SessionV1.APIError({
+                message: "The model stream ended without a finish frame",
+                isRetryable: true,
+                responseBody: "Stream terminated before a finish reason was received",
+              }).toObject()
+              yield* events.publish(Session.Event.Error, {
+                sessionID: ctx.assistantMessage.sessionID,
+                error: ctx.assistantMessage.error,
+              })
+              yield* status.set(ctx.sessionID, { type: "idle" })
+              return
+            }
             const completedSnapshot = yield* snapshot.track()
             yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
             const usage = Session.getUsage({
@@ -640,10 +674,25 @@ const layer = Layer.effect(
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
-              Stream.tap((event) => handleEvent(event)),
+              Stream.tap((event) => {
+                if (
+                  (event.type === "text-delta" && event.text.length > 0) ||
+                  (event.type === "reasoning-delta" && event.text.length > 0) ||
+                  event.type === "tool-input-start" ||
+                  event.type === "tool-call"
+                ) {
+                  generated.value = true
+                }
+                return handleEvent(event)
+              }),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
+            if (ctx.assistantMessage.finish === "unknown" && !generated.value) {
+              yield* new SessionRetry.EmptyResponseError({
+                message: "The model returned an empty response with an unknown finish reason",
+              })
+            }
           }).pipe(
             Effect.onInterrupt(() =>
               Effect.gen(function* () {

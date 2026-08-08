@@ -4,6 +4,7 @@ import * as Tool from "./tool"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { InstanceState } from "@/effect/instance-state"
+import { permissionPath } from "@/project/instance-context"
 import { Patch } from "../patch"
 import { createTwoFilesPatch, diffLines } from "diff"
 import { assertExternalDirectoryEffect } from "./external-directory"
@@ -202,7 +203,15 @@ export const ApplyPatchTool = Tool.define(
       }))
 
       // Check permissions if needed
-      const relativePaths = fileChanges.map((c) => path.relative(instance.worktree, c.filePath).replaceAll("\\", "/"))
+      const relativePaths = Array.from(
+        new Set(
+          fileChanges.flatMap((change) =>
+            [change.filePath, change.movePath]
+              .filter((filePath): filePath is string => filePath !== undefined)
+              .map((filePath) => permissionPath(filePath, instance).replaceAll("\\", "/")),
+          ),
+        ),
+      )
       yield* ctx.ask({
         permission: "edit",
         patterns: relativePaths,

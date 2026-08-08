@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun"
+import { copyFile, mkdir, readdir, rename } from "node:fs/promises"
 import path from "path"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
@@ -22,6 +23,26 @@ const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
+
+// After building the current platform's binary, keep dist-local in sync so a
+// locally-built binary is immediately usable without manually copying.
+const syncToDistLocal = async (name: string) => {
+  const localBin = path.resolve(dir, "dist-local", name, "bin")
+  const dest = path.join(localBin, "opencode.exe")
+  const src = path.join(dir, "dist", name, "bin", "opencode.exe")
+  if (!dest || !src) return
+  await mkdir(localBin, { recursive: true })
+  // A running exe cannot be overwritten, but it can be renamed. Force-replace by
+  // archiving the old binary before copying the fresh one.
+  try {
+    const stamp = new Date().toISOString().replace(/[-:T.]/g, "").slice(0, 13)
+    await rename(dest, path.join(localBin, `opencode.exe.running-${stamp}`))
+  } catch {
+    // no prior binary to archive
+  }
+  await copyFile(src, dest)
+  console.log(`Synced ${src} -> ${dest}`)
+}
 
 const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
@@ -212,6 +233,7 @@ for (const item of targets) {
       console.error(`Smoke test failed for ${name}:`, e)
       process.exit(1)
     }
+    await syncToDistLocal(name)
   }
 
   await $`rm -rf ./dist/${name}/bin/tui`

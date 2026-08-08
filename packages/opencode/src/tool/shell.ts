@@ -36,6 +36,29 @@ const FILES = new Set([
   "chmod",
   "chown",
   "cat",
+  // Writers that take their destination as a plain positional argument. Without these
+  // `tee ~/.ssh/authorized_keys` reaches the shell with no external_directory prompt,
+  // even though the documented behaviour is that the permission fires whenever a tool
+  // touches paths outside the project directory.
+  "dd",
+  "install",
+  "ln",
+  "rsync",
+  "shred",
+  "split",
+  "tee",
+  "truncate",
+  "unlink",
+  // Readers. These match how the read tool already prompts for out-of-project files.
+  "cmp",
+  "diff",
+  "head",
+  "less",
+  "more",
+  "sed",
+  "sort",
+  "tail",
+  "wc",
   // Leave PowerShell aliases out for now. Common ones like cat/cp/mv/rm/mkdir
   // already hit the entries above, and alias normalization should happen in one
   // place later so we do not risk double-prompting.
@@ -159,6 +182,17 @@ function expand(text: string, cwd: string, shell: string) {
   return home(out)
 }
 
+// POSIX counterpart to `expand`. Without it `$HOME`/`$PWD` survive into `dynamic()`,
+// which drops the argument, so `rm $HOME/.ssh/id_rsa` skipped the external_directory
+// scan even though `rm` is scanned. Only the two variables we can resolve without
+// running the shell are substituted; anything else still falls through to `dynamic()`.
+function posixExpand(text: string, cwd: string) {
+  const out = unquote(text).replace(/\$\{?(HOME|PWD)\}?(?=$|[\\/])/g, (_, key: string) =>
+    key === "HOME" ? os.homedir() : cwd,
+  )
+  return home(out)
+}
+
 function provider(text: string) {
   const match = text.match(/^([A-Za-z]+)::(.*)$/)
   if (match) {
@@ -254,6 +288,9 @@ function tail(text: string, maxLines: number, maxBytes: number) {
   }
 }
 
+const FAIL_TAIL_LINES = 50
+const FAIL_TAIL_BYTES = 8 * 1024
+
 const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boolean) {
   const tree = yield* Effect.promise(() => parser().then((p) => (ps ? p.ps : p.bash).parse(command)))
   if (!tree) throw new Error("Failed to parse command")
@@ -291,13 +328,24 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
 })
 
 function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
-  if (process.platform === "win32" && Shell.ps(shell)) {
-    return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
-      cwd,
-      env,
-      stdin: "ignore",
-      detached: false,
-    })
+  if (process.platform === "win32") {
+    if (Shell.ps(shell)) {
+      return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
+        cwd,
+        env,
+        stdin: "ignore",
+        detached: false,
+      })
+    }
+
+    if (Shell.posix(shell)) {
+      return ChildProcess.make(shell, ["-c", command], {
+        cwd,
+        env,
+        stdin: "ignore",
+        detached: false,
+      })
+    }
   }
 
   return ChildProcess.make(command, [], {
@@ -367,7 +415,7 @@ export const ShellTool = Tool.define(
     })
 
     const argPath = Effect.fn("ShellTool.argPath")(function* (arg: string, cwd: string, ps: boolean, shell: string) {
-      const text = ps ? expand(arg, cwd, shell) : home(unquote(arg))
+      const text = ps ? expand(arg, cwd, shell) : posixExpand(arg, cwd)
       const file = text && prefix(text)
       if (!file || dynamic(file, ps)) return
       const next = ps ? provider(file) : file
@@ -446,6 +494,7 @@ export const ShellTool = Tool.define(
       let cut = false
       let expired = false
       let aborted = false
+      let aborting = false
 
       const closeSink = Effect.fnUntraced(function* () {
         const stream = sink
@@ -522,11 +571,15 @@ export const ShellTool = Tool.define(
                 }
               }
 
-              return ctx.metadata({
+              const update = ctx.metadata({
                 metadata: {
                   output: last,
                 },
               })
+              if (!ctx.abort.aborted || aborting) return update
+              aborting = true
+              aborted = true
+              return update.pipe(Effect.andThen(handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.ignore)))
             }),
           )
 
@@ -566,7 +619,10 @@ export const ShellTool = Tool.define(
       }
       if (aborted) meta.push("User aborted the command")
       const raw = list.map((item) => item.text).join("")
-      const end = tail(raw, limits.maxLines, limits.maxBytes)
+      const failed = typeof code === "number" && code !== 0
+      const end = failed
+        ? tail(raw, FAIL_TAIL_LINES, FAIL_TAIL_BYTES)
+        : tail(raw, limits.maxLines, limits.maxBytes)
       if (end.cut) cut = true
       if (!file && end.cut) {
         file = yield* trunc.write(raw)
@@ -575,8 +631,12 @@ export const ShellTool = Tool.define(
       let output = end.text
       if (!output) output = "(no output)"
 
+      const status = failed ? `Command failed with exit code ${code}.\n\n` : ""
       if (cut && file) {
-        output = `...output truncated...\n\nFull output saved to: ${file}\n\n` + output
+        output =
+          `...output truncated...\n\n${status}Full output saved to: ${file}\n\n` + output
+      } else if (status) {
+        output = status + output
       }
 
       if (meta.length > 0) {

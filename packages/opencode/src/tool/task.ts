@@ -10,6 +10,7 @@ import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
+import { Permission } from "@/permission"
 import { Effect, Exit, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -19,6 +20,35 @@ export interface TaskPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
   resolvePromptParts(template: string): Effect.Effect<SessionPrompt.PromptInput["parts"]>
   prompt(input: SessionPrompt.PromptInput): Effect.Effect<SessionV1.WithParts>
+}
+
+type ForwardedFilePart = Extract<SessionPrompt.PromptInput["parts"][number], { type: "file" }>
+
+function parentAttachments(
+  messages: SessionV1.WithParts[],
+  parentMessageID: MessageID,
+  subagent: string,
+): ForwardedFilePart[] {
+  const parent = messages.find((message) => message.info.role === "user" && message.info.id === parentMessageID)
+  // Only forward attachments when the parent message explicitly targets this subagent.
+  if (!parent || !parent.parts.some((part) => part.type === "agent" && part.name === subagent)) return []
+
+  const seen = new Set<string>()
+  return parent.parts.flatMap((part) => {
+    if (part.type !== "file") return []
+    const key = [part.url, part.mime, part.filename ?? ""].join("\n")
+    if (seen.has(key)) return []
+    seen.add(key)
+    return [
+      {
+        type: "file" as const,
+        mime: part.mime,
+        filename: part.filename,
+        url: part.url,
+        source: part.source,
+      },
+    ]
+  })
 }
 
 const id = "task"
@@ -108,15 +138,42 @@ export const TaskTool = Tool.define(
         depth++
         current = yield* sessions.get(current.parentID)
       }
-      if (depth >= (cfg.subagent_depth ?? 1)) {
+      const currentAgent = yield* agent.get(ctx.agent)
+      const maxDepth = currentAgent?.subagent_depth ?? cfg.subagent_depth ?? 1
+
+      if (depth >= maxDepth) {
         return yield* Effect.fail(
           new Error(
-            `Subagent depth limit reached (${cfg.subagent_depth ?? 1}). Increase "subagent_depth" to allow nested subagents.`,
+            `Subagent depth limit reached (${maxDepth}). Increase "subagent_depth" to allow nested subagents.`,
+          ),
+        )
+      }
+
+      const next = yield* agent.get(params.subagent_type)
+      if (!next) {
+        return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
+      }
+      // Primary agents are user-facing modes, not delegatable task targets (#35238).
+      if (next.mode === "primary") {
+        return yield* Effect.fail(
+          new Error(
+            `Agent type "${params.subagent_type}" is a primary agent and cannot be used as a task subagent`,
           ),
         )
       }
 
       if (!ctx.extra?.bypassAgentCheck) {
+        // Hard-deny before ask so per-target deny rules are a runtime boundary even
+        // when the model invents a subagent_type name that is not listed in guidance.
+        const caller = yield* agent.get(ctx.agent)
+        const ruleset = Permission.merge(caller.permission, parent.permission ?? [])
+        if (Permission.evaluate(id, params.subagent_type, ruleset).action === "deny") {
+          return yield* Effect.fail(
+            new Error(
+              `Subagent type "${params.subagent_type}" is denied by permission rules for agent "${ctx.agent}"`,
+            ),
+          )
+        }
         yield* ctx.ask({
           permission: id,
           patterns: [params.subagent_type],
@@ -126,11 +183,6 @@ export const TaskTool = Tool.define(
             subagent_type: params.subagent_type,
           },
         })
-      }
-
-      const next = yield* agent.get(params.subagent_type)
-      if (!next) {
-        return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
       }
 
       const session = params.task_id
@@ -176,11 +228,12 @@ export const TaskTool = Tool.define(
         Effect.orDie,
       )
       if (msg.info.role !== "assistant") return yield* Effect.fail(new Error("Not an assistant message"))
-      const variant = msg.info.variant
+      const assistant = msg.info
+      const variant = assistant.variant
 
       const model = next.model ?? {
-        modelID: msg.info.modelID,
-        providerID: msg.info.providerID,
+        modelID: assistant.modelID,
+        providerID: assistant.providerID,
       }
       const metadata = {
         parentSessionId: ctx.sessionID,
@@ -199,6 +252,23 @@ export const TaskTool = Tool.define(
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         const parts = yield* ops.resolvePromptParts(params.prompt)
+        const forwarded = parentAttachments(ctx.messages, assistant.parentID, next.name)
+        const promptParts =
+          forwarded.length === 0
+            ? parts
+            : [
+                ...parts,
+                ...forwarded.filter(
+                  (candidate) =>
+                    !parts.some(
+                      (part) =>
+                        part.type === "file" &&
+                        part.url === candidate.url &&
+                        part.mime === candidate.mime &&
+                        part.filename === candidate.filename,
+                    ),
+                ),
+              ]
         const result = yield* ops.prompt({
           messageID: MessageID.ascending(),
           sessionID: nextSession.id,
@@ -208,7 +278,7 @@ export const TaskTool = Tool.define(
           },
           variant: next.model ? undefined : variant,
           agent: next.name,
-          parts,
+          parts: promptParts,
         })
         return result.parts.findLast((item) => item.type === "text")?.text ?? ""
       })
