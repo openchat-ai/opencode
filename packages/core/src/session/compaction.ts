@@ -8,12 +8,15 @@ import { SessionEvent } from "./event"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
 import { Token } from "../util/token"
+import type { FileAttachment } from "./prompt"
 
 const DEFAULT_BUFFER = 20_000
-const DEFAULT_KEEP_TOKENS = 8_000
+const DEFAULT_KEEP_TOKENS = 15_000
 const DEFAULT_WATERMARK = 64_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const SUMMARY_OUTPUT_TOKENS = 4_096
+const COMPACTION_CHUNK_TOKENS = 32_000
+const REQUEST_BODY_COMPACTION_BYTES = 8 * 1024 * 1024
 const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
 <template>
 ## Objective
@@ -74,6 +77,7 @@ type Input = {
   readonly entries: readonly Entry[]
   readonly model: Model
   readonly request: LLMRequest
+  readonly requestBytes: number
 }
 
 const estimate = (value: unknown) => Token.estimate(JSON.stringify(value))
@@ -134,7 +138,7 @@ const settings = (documents: readonly Config.Entry[]) => {
 const select = (
   entries: readonly Entry[],
   tokens: number,
-): { readonly head: string; readonly recent: string; readonly headEntries: readonly Entry[] } | undefined => {
+): { readonly head: string; readonly recent: string; readonly headEntries: readonly Entry[]; readonly media: readonly FileAttachment[] } | undefined => {
   const conversation = entries
     .filter((entry) => entry.message.type !== "compaction")
     .map((entry) => ({ entry, text: serialize(entry.message) }))
@@ -159,10 +163,12 @@ const select = (
     split = index
   }
   const headItems = conversation.slice(0, split)
+  const media = headItems.flatMap((item) => (item.entry.message.type === "user" ? (item.entry.message.files ?? []) : []))
   return {
     head: [...headItems.map((item) => item.text), splitPrefix].filter(Boolean).join("\n\n"),
     recent: [splitSuffix, ...conversation.slice(split).map((item) => item.text)].filter(Boolean).join("\n\n"),
     headEntries: (splitPrefix ? headItems.slice(0, -1) : headItems).map((item) => item.entry),
+    media,
   }
 }
 
@@ -174,6 +180,17 @@ export const buildPrompt = (input: { readonly previousSummary?: string; readonly
     SUMMARY_TEMPLATE,
     ...input.context,
   ].join("\n\n")
+
+// Split a large context into bounded chunks so a single compaction request does
+// not itself overflow the provider context window. Each chunk is summarized in
+// its own bounded request and the running summary feeds the next chunk.
+const chunkContext = (context: readonly string[]) => {
+  const value = context.filter(Boolean).join("\n\n")
+  const size = COMPACTION_CHUNK_TOKENS * 4
+  return Array.from({ length: Math.ceil(value.length / size) }, (_, index) =>
+    value.slice(index * size, (index + 1) * size),
+  )
+}
 
 // Extract standing instructions from the summary produced by the compaction
 // model. The summary template asks the model to record user instructions that
@@ -207,8 +224,10 @@ export const shouldCompact = (input: {
   readonly auto: boolean
   readonly buffer: number
   readonly watermark: number
+  readonly requestBytes?: number
 }) => {
   if (!input.auto) return false
+  if (input.requestBytes !== undefined && input.requestBytes >= REQUEST_BODY_COMPACTION_BYTES) return true
   const context = input.model.route.defaults.limits?.context
   if (context === undefined || context <= 0) return false
   const output = input.request.generation?.maxTokens ?? input.model.route.defaults.limits?.output ?? 0
@@ -229,11 +248,15 @@ export const make = (dependencies: Dependencies) => {
     const selected = select(input.entries, config.tokens)
     const previousSummary = input.entries.find((entry) => entry.message.type === "compaction")?.message
     if (!selected || (selected.head.length === 0 && previousSummary?.type !== "compaction")) return false
+    const summaryOutput = Math.min(output || SUMMARY_OUTPUT_TOKENS, SUMMARY_OUTPUT_TOKENS)
+    const contexts = chunkContext([
+      previousSummary?.type === "compaction" ? previousSummary.recent : "",
+      selected.head,
+    ])
     const summaryPrompt = buildPrompt({
       previousSummary: previousSummary?.type === "compaction" ? previousSummary.summary : undefined,
-      context: [previousSummary?.type === "compaction" ? previousSummary.recent : "", selected.head].filter(Boolean),
+      context: contexts,
     })
-    const summaryOutput = Math.min(output || SUMMARY_OUTPUT_TOKENS, SUMMARY_OUTPUT_TOKENS)
     if (Token.estimate(summaryPrompt) > context - summaryOutput) return false
     const messageID = SessionMessage.ID.create()
     yield* dependencies.events.publish(SessionEvent.Compaction.Started, {
@@ -243,28 +266,43 @@ export const make = (dependencies: Dependencies) => {
       reason: "auto",
     })
 
-    const chunks: string[] = []
-    let failed = false
-    const summarized = yield* dependencies.llm
-      .stream(
-        LLM.request({
-          model: input.model,
-          messages: [Message.user(summaryPrompt)],
-          tools: [],
-          generation: { maxTokens: summaryOutput },
-        }),
-      )
-      .pipe(
-        Stream.runForEach((event) => {
-          if (LLMEvent.is.providerError(event)) failed = true
-          if (LLMEvent.is.textDelta(event)) chunks.push(event.text)
-          return Effect.void
-        }),
-        Effect.as(true),
-        Effect.catchTag("LLM.Error", () => Effect.succeed(false)),
-      )
-    const summary = chunks.join("")
-    if (!summarized || failed || !summary.trim()) return false
+    let summary = previousSummary?.type === "compaction" ? previousSummary.summary : undefined
+    for (const [index, chunk] of contexts.entries()) {
+      const chunks: string[] = []
+      const publish = index === contexts.length - 1
+      const timestamp = yield* DateTime.now
+      let failed = false
+      const summarized = yield* dependencies.llm
+        .stream(
+          LLM.request({
+            model: input.model,
+            messages: [Message.user(buildPrompt({ previousSummary: summary, context: [chunk] }))],
+            tools: [],
+            generation: { maxTokens: summaryOutput },
+          }),
+        )
+        .pipe(
+          Stream.runForEach((event) => {
+            if (LLMEvent.is.providerError(event)) failed = true
+            if (LLMEvent.is.textDelta(event)) {
+              chunks.push(event.text)
+              if (publish) return dependencies.events.publish(SessionEvent.Compaction.Delta, {
+                sessionID: input.sessionID,
+                messageID,
+                text: event.text,
+                timestamp,
+              })
+            }
+            return Effect.void
+          }),
+          Effect.as(true),
+          Effect.catchTag("LLM.Error", () => Effect.succeed(false)),
+        )
+      const next = chunks.join("")
+      if (!summarized || failed || !next.trim()) return false
+      summary = next
+    }
+    if (!summary?.trim()) return false
     yield* dependencies.events.publish(SessionEvent.Compaction.Ended, {
       sessionID: input.sessionID,
       messageID,
@@ -273,6 +311,7 @@ export const make = (dependencies: Dependencies) => {
       text: summary,
       recent: selected.recent,
       pinned: extractPinned(summary),
+      media: selected.media,
     })
     return true
   })
@@ -284,6 +323,7 @@ export const make = (dependencies: Dependencies) => {
         auto: config.auto,
         buffer: config.buffer,
         watermark: config.watermark,
+        requestBytes: input.requestBytes,
       })
     )
       return false

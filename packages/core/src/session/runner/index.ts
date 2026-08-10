@@ -23,6 +23,9 @@ export interface Interface {
     readonly sessionID: SessionSchema.ID
     readonly force: boolean
   }) => Effect.Effect<void, RunError>
+
+  /** Manually trigger compaction on the session. Returns true if compaction was performed. */
+  readonly compact: (sessionID: SessionSchema.ID) => Effect.Effect<boolean, RunError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionRunner") {}

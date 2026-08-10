@@ -225,7 +225,15 @@ const layer = Layer.effect(
         tools: toolMaterialization?.definitions ?? [],
         toolChoice: isLastStep ? "none" : undefined,
       })
-      if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))
+      if (yield* compaction.compactIfNeeded({
+        sessionID: session.id,
+        entries,
+        model,
+        request,
+        requestBytes: new TextEncoder().encode(
+          JSON.stringify({ system: request.system, messages: request.messages, tools: request.tools }),
+        ).length,
+      }))
         return yield* Effect.die(continueAfterCompaction(currentStep))
       const startSnapshot = yield* snapshots.capture()
       const publisher = createLLMEventPublisher(events, {
@@ -296,7 +304,9 @@ const layer = Layer.effect(
             recoverOverflow &&
             !publisher.hasAssistantStarted() &&
             isContextOverflowFailure(overflowFailure ?? failure) &&
-            (yield* restore(recoverOverflow({ sessionID: session.id, entries, model, request })))
+            (yield* restore(recoverOverflow({ sessionID: session.id, entries, model, request, requestBytes: new TextEncoder().encode(
+          JSON.stringify({ system: request.system, messages: request.messages, tools: request.tools }),
+        ).length })))
           )
             return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
           if (overflowFailure) yield* publish(overflowFailure)
@@ -405,6 +415,35 @@ const layer = Layer.effect(
       const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
       if (!input.force && !hasSteer && !hasQueue) return
       yield* failInterruptedTools(input.sessionID)
+      // Compaction barrier: check if the session needs compaction before starting
+      // the steer loop, especially when force is true.
+      if (input.force && !hasSteer && !hasQueue) {
+        const session = yield* getSession(input.sessionID)
+        const agent = yield* agents.select(session.agent)
+        const system = yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id)
+        const model = yield* models.resolve(session)
+        const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
+        const context = entries.map((entry) => entry.message)
+        const request = LLM.request({
+          model,
+          system: [agent.info?.system, system.baseline]
+            .filter((part): part is string => part !== undefined && part.length > 0)
+            .map(SystemPart.make),
+          messages: toLLMMessages(context, model),
+          tools: [],
+        })
+        const requestBytes = new TextEncoder().encode(
+          JSON.stringify({ system: request.system, messages: request.messages, tools: request.tools }),
+        ).length
+        if (yield* compaction.compactIfNeeded({
+          sessionID: input.sessionID,
+          entries,
+          model,
+          request,
+          requestBytes,
+        }))
+          yield* Effect.yieldNow
+      }
       let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined
       let shouldRun = input.force || hasSteer || hasQueue
       while (shouldRun) {
@@ -422,8 +461,30 @@ const layer = Layer.effect(
       }
     })
 
+    const compact = Effect.fn("SessionRunner.compact")(function* (sessionID: SessionSchema.ID) {
+      const session = yield* getSession(sessionID)
+      const agent = yield* agents.select(session.agent)
+      const system = yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id)
+      const model = yield* models.resolve(session)
+      const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
+      const context = entries.map((entry) => entry.message)
+      const request = LLM.request({
+        model,
+        system: [agent.info?.system, system.baseline]
+          .filter((part): part is string => part !== undefined && part.length > 0)
+          .map(SystemPart.make),
+        messages: toLLMMessages(context, model),
+        tools: [],
+      })
+      const requestBytes = new TextEncoder().encode(
+        JSON.stringify({ system: request.system, messages: request.messages, tools: request.tools }),
+      ).length
+      return yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request, requestBytes })
+    })
+
     return Service.of({
       run,
+      compact,
     })
   }),
 )

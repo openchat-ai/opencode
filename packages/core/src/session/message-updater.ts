@@ -384,6 +384,7 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
             summary: event.data.text,
             recent: event.data.recent,
             pinned: event.data.pinned,
+            media: event.data.media,
             time: { created: event.data.timestamp },
           }),
         )

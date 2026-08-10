@@ -427,6 +427,7 @@ export namespace Compaction {
       text: Schema.String,
       recent: Schema.String,
       pinned: Schema.String.pipe(optional),
+      media: Schema.Array(FileAttachment).pipe(optional),
     },
   })
   export type Ended = typeof Ended.Type

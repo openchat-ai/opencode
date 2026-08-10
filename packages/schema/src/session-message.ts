@@ -195,6 +195,7 @@ export const Compaction = Schema.Struct({
   summary: Schema.String,
   recent: Schema.String,
   pinned: Schema.String.pipe(optional),
+  media: Schema.Array(FileAttachment).pipe(optional),
   ...Base,
 }).annotate({ identifier: "Session.Message.Compaction" })
 
