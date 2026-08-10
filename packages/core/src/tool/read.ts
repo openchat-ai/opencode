@@ -5,6 +5,7 @@ import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { FileSystem } from "../filesystem"
 import { Image } from "../image"
+import { loadedInstructionPaths } from "../instruction-context"
 import { LocationMutation } from "../location-mutation"
 import { PermissionV2 } from "../permission"
 import { AbsolutePath } from "../schema"
@@ -43,6 +44,8 @@ const layer = Layer.effectDiscard(
           input: Input,
           output: Output,
           toModelOutput: ({ input, output }) => {
+            if ("uri" in output && loadedInstructionPaths.has(output.uri))
+              return [{ type: "text", text: `Read ${input.path}; its full contents are loaded as session instructions.` }]
             if (!("encoding" in output) || output.encoding !== "base64" || !SUPPORTED_IMAGE_MIMES.has(output.mime))
               return []
             return [

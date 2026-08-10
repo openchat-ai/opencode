@@ -2,6 +2,7 @@ export * as InstructionContext from "./instruction-context"
 
 import { Array, Effect, Layer, Schema } from "effect"
 import { isAbsolute, join, relative, sep } from "path"
+import { pathToFileURL } from "url"
 import { FSUtil } from "./fs-util"
 import { Flag } from "./flag/flag"
 import { Global } from "./global"
@@ -11,6 +12,8 @@ import { SystemContext } from "./system-context/index"
 import { SystemContextRegistry } from "./system-context/registry"
 import { makeLocationNode } from "./effect/app-node"
 import { Token } from "./util/token"
+
+export const loadedInstructionPaths = new Set<string>()
 
 class File extends Schema.Class<File>("InstructionContext.File")({
   path: AbsolutePath,
@@ -73,9 +76,12 @@ const layer = Layer.effectDiscard(
             ),
         { concurrency: "unbounded" },
       )
+      const loaded = files.filter((file): file is File => file !== undefined)
+      loadedInstructionPaths.clear()
       if (files.some((file, index) => file === undefined && discovered.has(paths[index])))
         return SystemContext.unavailable
-      return files.filter((file): file is File => file !== undefined)
+      for (const file of loaded) loadedInstructionPaths.add(pathToFileURL(file.path).href)
+      return loaded
     })
 
     yield* registry.register({
