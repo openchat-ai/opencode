@@ -604,32 +604,17 @@ it.live("session.processor effect tests retry recognized structured json errors"
   ),
 )
 
-it.live("session.processor effect tests retry empty responses with unknown finish reasons", () =>
+it.live("session.processor effect tests retry OpenAI-compatible midstream server errors", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
         const { processors, session, provider } = yield* boot()
 
-        yield* llm.push(
-          raw({
-            chunks: [
-              {
-                id: "chatcmpl-test",
-                object: "chat.completion.chunk",
-                choices: [{ delta: { role: "assistant" }, finish_reason: null }],
-              },
-              {
-                id: "chatcmpl-test",
-                object: "chat.completion.chunk",
-                choices: [{ delta: {}, finish_reason: "unknown_reason" }],
-              },
-            ],
-          }),
-          reply().text("after").stop(),
-        )
+        yield* llm.push(raw({ chunks: [{ error: { type: "server_error", code: "server_error", message: "xxx" } }] }))
+        yield* llm.text("after")
 
         const chat = yield* session.create({})
-        const parent = yield* user(chat.id, "retry empty")
+        const parent = yield* user(chat.id, "retry midstream server error")
         const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
         const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
         const handle = yield* processors.create({
@@ -651,7 +636,7 @@ it.live("session.processor effect tests retry empty responses with unknown finis
           model: mdl,
           agent: agent(),
           system: [],
-          messages: [{ role: "user", content: "retry empty" }],
+          messages: [{ role: "user", content: "retry midstream server error" }],
           tools: {},
         })
 
