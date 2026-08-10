@@ -3,6 +3,8 @@ on:
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -15,19 +17,24 @@ jobs:
         run: |
           git remote add upstream https://github.com/anomalyco/opencode.git
           git fetch upstream dev
-      - name: Rebase onto upstream/dev
-        id: rebase
+      - name: Merge upstream/dev into cost-strategy
+        id: merge
         continue-on-error: true
         run: |
-          git rebase upstream/dev
+          git config user.name "opencode-agent[bot]"
+          git config user.email "opencode-agent[bot]@users.noreply.github.com"
+          git merge upstream/dev --no-edit -X theirs
       - name: Notify on conflict
-        if: steps.rebase.outcome == 'failure'
+        if: steps.merge.outcome == 'failure'
         run: |
-          echo "::error::Rebase conflict detected on cost-strategy. Resolve manually:"
+          echo "::error::Merge conflict detected on cost-strategy. Resolve manually."
           echo "  git fetch upstream dev"
-          echo "  git rebase upstream/dev"
+          echo "  git merge upstream/dev"
           exit 1
-      - name: Force push
-        if: steps.rebase.outcome == 'success'
+      - name: Restore workflow files and push
+        if: steps.merge.outcome == 'success'
         run: |
-          git push --force-with-lease origin cost-strategy
+          git restore --source=HEAD^ -- .github/workflows/
+          git add .github/workflows/
+          git commit --amend --no-edit
+          git push origin cost-strategy
