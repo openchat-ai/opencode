@@ -1,0 +1,33 @@
+name: Sync cost-strategy with upstream dev
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cost-strategy
+          fetch-depth: 0
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/anomalyco/opencode.git
+          git fetch upstream dev
+      - name: Rebase onto upstream/dev
+        id: rebase
+        continue-on-error: true
+        run: |
+          git rebase upstream/dev
+      - name: Notify on conflict
+        if: steps.rebase.outcome == 'failure'
+        run: |
+          echo "::error::Rebase conflict detected on cost-strategy. Resolve manually:"
+          echo "  git fetch upstream dev"
+          echo "  git rebase upstream/dev"
+          exit 1
+      - name: Force push
+        if: steps.rebase.outcome == 'success'
+        run: |
+          git push --force-with-lease origin cost-strategy
