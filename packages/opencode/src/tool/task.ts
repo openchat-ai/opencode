@@ -113,6 +113,20 @@ export const TaskTool = Tool.define(
   id,
   Effect.gen(function* () {
     const agent = yield* Agent.Service
+    const agentList = yield* agent.list()
+    const subagentNames = agentList
+      .filter((a) => a.mode !== "primary" && !a.hidden)
+      .map((a) => a.name)
+      .join(", ")
+    const subagentDesc = `The type of specialized agent to use for this task. Available agents: ${subagentNames}`
+    const DynamicParameters = Schema.Struct({
+      ...BaseParameterFields,
+      subagent_type: Schema.String.annotate({ description: subagentDesc }),
+      background: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
+      }),
+    })
     const background = yield* BackgroundJob.Service
     const config = yield* Config.Service
     const sessions = yield* Session.Service
@@ -439,9 +453,9 @@ export const TaskTool = Tool.define(
       description: flags.experimentalBackgroundSubagents
         ? [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n")
         : DESCRIPTION,
-      parameters: Parameters,
+      parameters: DynamicParameters,
       jsonSchema: flags.experimentalBackgroundSubagents ? undefined : ToolJsonSchema.fromSchema(BaseParameters),
-      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
+      execute: (params: Schema.Schema.Type<typeof DynamicParameters>, ctx: Tool.Context) =>
         run(params, ctx).pipe(Effect.orDie),
     }
   }),
