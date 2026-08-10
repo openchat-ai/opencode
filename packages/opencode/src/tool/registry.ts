@@ -9,7 +9,7 @@ import { EditTool } from "./edit"
 import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
-import { TaskTool } from "./task"
+import { TaskTool, taskParameters } from "./task"
 import { Database } from "@opencode-ai/core/database/database"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
@@ -257,16 +257,24 @@ const layer = Layer.effect(
       return (yield* all()).map((tool) => tool.id)
     })
 
+    // Permission-visible subagent targets, shared by the task description and
+    // the dynamic `subagent_type` parameter description.
+    const subagentTargets = Effect.fn("ToolRegistry.subagentTargets")(function* (input: {
+      agent: Agent.Info
+      permission?: PermissionV1.Ruleset
+    }) {
+      const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
+      return (yield* agents.list())
+        .filter((item) => item.mode !== "primary" && item.hidden !== true)
+        .filter((item) => Permission.evaluate("task", item.name, ruleset).action !== "deny")
+        .toSorted((a, b) => a.name.localeCompare(b.name))
+    })
+
     const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (input: {
       agent: Agent.Info
       permission?: PermissionV1.Ruleset
     }) {
-      // Merge agent + session rules so model-facing guidance matches execute-time
-      // evaluation (session ceilings can deny targets that the agent alone allows).
-      const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
-      const items = (yield* agents.list()).filter((item) => item.mode !== "primary" && item.hidden !== true)
-      const filtered = items.filter((item) => Permission.evaluate("task", item.name, ruleset).action !== "deny")
-      const list = filtered.toSorted((a, b) => a.name.localeCompare(b.name))
+      const list = yield* subagentTargets(input)
       if (list.length === 0) {
         return "No subagent types are available under the current permission rules. Do not call the task tool."
       }
@@ -320,6 +328,12 @@ const layer = Layer.effect(
             description: tool.description,
             parameters: tool.parameters,
             jsonSchema: tool.jsonSchema,
+          }
+          if (tool.id === TaskTool.id) {
+            const names = (yield* subagentTargets({ agent: input.agent, permission: input.permission })).map(
+              (item) => item.name,
+            )
+            output.parameters = taskParameters(names.length ? names.join(", ") : "none available")
           }
           yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
           const jsonSchema =
