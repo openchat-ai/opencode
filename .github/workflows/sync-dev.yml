@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   sync:
@@ -37,5 +36,8 @@ jobs:
           exit 1
       - name: Push
         if: steps.merge.outcome == 'success'
+        env:
+          SYNC_PAT: ${{ secrets.SYNC_PAT }}
         run: |
+          git remote set-url origin "https://x-access-token:${SYNC_PAT}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin dev
