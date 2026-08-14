@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
-  workflows: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -34,5 +34,8 @@ jobs:
           exit 1
       - name: Push
         if: steps.merge.outcome == 'success'
+        env:
+          SYNC_PAT: ${{ secrets.SYNC_PAT }}
         run: |
+          git remote set-url origin "https://x-access-token:${SYNC_PAT}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin cost-strategy
