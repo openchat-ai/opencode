@@ -39,5 +39,6 @@ jobs:
         env:
           SYNC_PAT: ${{ secrets.SYNC_PAT }}
         run: |
+          git config --local --unset-all http.https://github.com/.extraheader || true
           git remote set-url origin "https://x-access-token:${SYNC_PAT}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin dev
