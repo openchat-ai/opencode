@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun"
-import { copyFile, mkdir, readdir, rename } from "node:fs/promises"
+import { copyFile, mkdir, readdir, rename, stat, unlink } from "node:fs/promises"
 import path from "path"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
@@ -42,6 +42,30 @@ const syncToDistLocal = async (name: string) => {
   }
   await copyFile(src, dest)
   console.log(`Synced ${src} -> ${dest}`)
+  await pruneStaleArchives(localBin)
+}
+
+const pruneStaleArchives = async (localBin: string) => {
+  const archives = (await readdir(localBin)).filter(
+    (file) =>
+      file === "opencode.exe.old" ||
+      file.startsWith("opencode.exe.running-") ||
+      file.startsWith("opencode.exe.bak-"),
+  )
+  const stale = (
+    await Promise.all(
+      archives.map(async (file) => ({
+        file,
+        mtime: (await stat(path.join(localBin, file))).mtimeMs,
+      })),
+    )
+  )
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(3)
+  for (const { file } of stale) {
+    await unlink(path.join(localBin, file))
+    console.log(`Pruned stale archive: ${file}`)
+  }
 }
 
 const createEmbeddedWebUIBundle = async () => {
