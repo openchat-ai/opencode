@@ -253,6 +253,7 @@ export const dict = {
   "zen.privacy.exceptionsLink": "以下の例外",
 
   "go.title": "OpenCode Go | すべての人のための低価格なコーディングモデル",
+  "go.banner.text": "Hy3の利用上限が期間限定で8倍に",
   "go.meta.description":
     "Goは最初の月$5、その後$10/月で、主要なコーディングモデルへのゆとりある利用上限と安定したアクセスを提供します。",
   "go.hero.title": "すべての人のための低価格なコーディングモデル",
@@ -341,15 +342,11 @@ export const dict = {
   "go.faq.a5.retention": "データ保持",
   "go.faq.a5.retention30": "30日",
   "go.faq.a5.retention0": "0日",
-  "go.faq.a5.used": "使用あり",
   "go.faq.a5.notUsed": "使用なし",
   "go.faq.a5.noAgreement": "契約なし",
-  "go.faq.a5.notZdr": "ZDRではない",
   "go.faq.a5.grokRetention":
     "ZDRでは、保存データに依存する重要なAPI機能（ステートフルなResponses API、Files and Collections、Batch APIなど）が無効になります。",
   "go.faq.a5.gptRetention": "不正使用監視ログはすべてのAPI機能の使用時に生成され、最大30日間保持されます。",
-  "go.faq.a5.museRetention":
-    "将来のMetaモデルのトレーニングにプロンプトと生成結果を使用する許可と引き換えに、トークン料金が大幅に割引されます。",
   "go.faq.a5.learnMore": "詳しく見る",
   "go.faq.a5.deepseekRetention": "ZDR契約は毎月更新されます。現在の契約は2026年8月31日まで有効です。",
   "go.faq.a5.beforeExceptions":

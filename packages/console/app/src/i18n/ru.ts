@@ -258,6 +258,7 @@ export const dict = {
   "zen.privacy.exceptionsLink": "следующими исключениями",
 
   "go.title": "OpenCode Go | Недорогие модели для кодинга для всех",
+  "go.banner.text": "Hy3 получает 8x лимиты использования на ограниченное время",
   "go.meta.description":
     "Go стоит $5 за первый месяц, затем $10/месяц и предлагает щедрые лимиты использования и надежный доступ к ведущим моделям для кодинга.",
   "go.hero.title": "Недорогие модели для кодинга для всех",
@@ -347,10 +348,8 @@ export const dict = {
   "go.faq.a5.retention": "Хранение данных",
   "go.faq.a5.retention30": "30 дней",
   "go.faq.a5.retention0": "0 дней",
-  "go.faq.a5.used": "Используется",
   "go.faq.a5.notUsed": "Не используется",
   "go.faq.a5.noAgreement": "Нет соглашения",
-  "go.faq.a5.notZdr": "Не ZDR",
   "go.faq.a5.grokRetention":
     "ZDR отключает важные функции API, зависящие от сохраненных данных, включая Responses API с сохранением состояния, Files and Collections и Batch API.",
   "go.faq.a5.gptRetention":
@@ -358,8 +357,6 @@ export const dict = {
   "go.faq.a5.learnMore": "Подробнее",
   "go.faq.a5.deepseekRetention":
     "Соглашение ZDR продлевается ежемесячно. Текущее соглашение действует до 31 августа 2026 года.",
-  "go.faq.a5.museRetention":
-    "Значительно сниженная стоимость токенов в обмен на разрешение использовать ваши промпты и ответы для обучения будущих моделей Meta.",
 
   "go.faq.a5.beforeExceptions":
     "Модели Go размещены в США. Провайдеры следуют политике нулевого хранения и не используют ваши данные для обучения моделей, за",

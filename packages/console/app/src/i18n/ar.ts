@@ -252,6 +252,7 @@ export const dict = {
   "zen.privacy.exceptionsLink": "الاستثناءات التالية",
 
   "go.title": "OpenCode Go | نماذج برمجة منخفضة التكلفة للجميع",
+  "go.banner.text": "يحصل Hy3 على حدود استخدام أكبر 8 أضعاف لفترة محدودة",
   "go.meta.description":
     "يبدأ Go بسعر $5 للشهر الأول، ثم $10/شهر، مع حدود استخدام سخية ووصول موثوق إلى نماذج البرمجة الرائدة.",
   "go.hero.title": "نماذج برمجة منخفضة التكلفة للجميع",
@@ -338,16 +339,12 @@ export const dict = {
   "go.faq.a5.retention": "الاحتفاظ بالبيانات",
   "go.faq.a5.retention30": "30 يومًا",
   "go.faq.a5.retention0": "0 أيام",
-  "go.faq.a5.used": "مستخدَمة",
   "go.faq.a5.notUsed": "غير مستخدَمة",
   "go.faq.a5.noAgreement": "لا توجد اتفاقية",
-  "go.faq.a5.notZdr": "ليست ZDR",
   "go.faq.a5.grokRetention":
     "تعطّل ZDR ميزات API مهمة تعتمد على البيانات المخزنة، بما في ذلك Responses API ذات الحالة، وFiles and Collections، وBatch API.",
   "go.faq.a5.gptRetention":
     "تُنشأ سجلات مراقبة إساءة الاستخدام لكل استخدام لميزات API، ويُحتفظ بها لمدة تصل إلى 30 يومًا.",
-  "go.faq.a5.museRetention":
-    "أسعار توكنات مخفّضة للغاية مقابل منح الإذن باستخدام مطالباتك وإكمالات النموذج لتدريب نماذج Meta المستقبلية.",
   "go.faq.a5.learnMore": "اعرف المزيد",
   "go.faq.a5.deepseekRetention": "تُجدَّد اتفاقية ZDR شهريًا. الاتفاقية الحالية سارية حتى 31 أغسطس 2026.",
   "go.faq.a5.beforeExceptions":

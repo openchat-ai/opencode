@@ -244,6 +244,7 @@ export const dict = {
   "zen.privacy.exceptionsLink": "以下例外情況",
 
   "go.title": "OpenCode Go | 低成本全民編碼模型",
+  "go.banner.text": "Hy3 限時享有 8 倍使用額度",
   "go.meta.description": "Go 首月 $5，之後 $10/月，提供充裕的使用限額，並可穩定存取領先的編碼模型。",
   "go.hero.title": "低成本全民編碼模型",
   "go.hero.body":
@@ -325,14 +326,11 @@ export const dict = {
   "go.faq.a5.retention": "資料保留",
   "go.faq.a5.retention30": "30 天",
   "go.faq.a5.retention0": "0 天",
-  "go.faq.a5.used": "使用",
   "go.faq.a5.notUsed": "不使用",
   "go.faq.a5.noAgreement": "無協議",
-  "go.faq.a5.notZdr": "非 ZDR",
   "go.faq.a5.grokRetention":
     "ZDR 會停用依賴儲存資料的重要 API 功能，包括具狀態的 Responses API、Files and Collections 與 Batch API。",
   "go.faq.a5.gptRetention": "所有 API 功能的使用都會產生濫用監控日誌，並保留最多 30 天。",
-  "go.faq.a5.museRetention": "以允許使用您的提示詞和生成結果來訓練未來的 Meta 模型為交換，token 價格可享大幅折扣。",
   "go.faq.a5.learnMore": "了解更多",
   "go.faq.a5.deepseekRetention": "ZDR 協議每月續簽。目前的協議有效至 2026 年 8 月 31 日。",
   "go.faq.a5.beforeExceptions": "Go 模型託管在美國。供應商遵循零留存政策，不會將你的資料用於模型訓練，但有",

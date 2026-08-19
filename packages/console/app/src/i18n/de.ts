@@ -256,6 +256,7 @@ export const dict = {
   "zen.privacy.exceptionsLink": "folgenden Ausnahmen",
 
   "go.title": "OpenCode Go | Kostengünstige Coding-Modelle für alle",
+  "go.banner.text": "Hy3 erhält für begrenzte Zeit 8x Nutzungslimits",
   "go.meta.description":
     "Go beginnt bei $5 für deinen ersten Monat, danach $10/Monat, mit großzügigen Nutzungslimits und zuverlässigem Zugang zu führenden Coding-Modellen.",
   "go.hero.title": "Kostengünstige Coding-Modelle für alle",
@@ -344,16 +345,12 @@ export const dict = {
   "go.faq.a5.retention": "Datenaufbewahrung",
   "go.faq.a5.retention30": "30 Tage",
   "go.faq.a5.retention0": "0 Tage",
-  "go.faq.a5.used": "Verwendet",
   "go.faq.a5.notUsed": "Nicht verwendet",
   "go.faq.a5.noAgreement": "Keine Vereinbarung",
-  "go.faq.a5.notZdr": "Kein ZDR",
   "go.faq.a5.grokRetention":
     "ZDR deaktiviert wichtige API-Funktionen, die von gespeicherten Daten abhängen, einschließlich der zustandsbehafteten Responses API, Files and Collections und der Batch API.",
   "go.faq.a5.gptRetention":
     "Für die Nutzung aller API-Funktionen werden Protokolle zur Missbrauchsüberwachung erstellt und bis zu 30 Tage lang aufbewahrt.",
-  "go.faq.a5.museRetention":
-    "Stark vergünstigte Tokenpreise im Gegenzug für die Erlaubnis, deine Prompts und Vervollständigungen zum Trainieren zukünftiger Meta-Modelle zu verwenden.",
   "go.faq.a5.learnMore": "Mehr erfahren",
   "go.faq.a5.deepseekRetention":
     "Die ZDR-Vereinbarung wird monatlich erneuert. Die aktuelle Vereinbarung gilt bis einschließlich 31. August 2026.",
