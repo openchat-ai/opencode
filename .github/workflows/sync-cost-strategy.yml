@@ -30,6 +30,7 @@ jobs:
         if: steps.merge.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           git merge --abort || true
           title="[auto] cost-strategy 同步冲突，需要手动合并"
