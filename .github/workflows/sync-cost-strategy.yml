@@ -1,10 +1,11 @@
 name: Sync cost-strategy with upstream dev
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 */12 * * *"
   workflow_dispatch:
 permissions:
   contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -26,11 +27,19 @@ jobs:
           git merge upstream/dev --no-edit
       - name: Notify on conflict
         if: steps.merge.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
         run: |
-          echo "::error::Merge conflict detected while syncing cost-strategy with upstream. Resolve manually:"
-          echo "  git fetch upstream dev"
-          echo "  git merge upstream/dev"
-          exit 1
+          git merge --abort || true
+          title="[auto] cost-strategy 同步冲突，需要手动合并"
+          printf 'upstream/dev 合并进 cost-strategy 出现冲突（%s UTC）。\n\n请在本仓库 clone 中执行：\n\n```\ngit remote add upstream https://github.com/anomalyco/opencode.git\ngit fetch upstream dev\ngit merge upstream/dev\n```\n' "$(date -u '+%Y-%m-%d %H:%M')" > body.md
+          number=$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file body.md
+          else
+            gh issue create --title "$title" --body-file body.md
+          fi
+          echo "::notice::Merge conflict detected; notified via issue #${number:-new}"
       - name: Push
         if: steps.merge.outcome == 'success'
         env:
