@@ -32,9 +32,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           git merge --abort || true
+          echo "::notice::gh version: $(gh --version | head -1)"
+          echo "::notice::resolved repo: $(gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1)"
           title="[auto] cost-strategy 同步冲突，需要手动合并"
           printf 'upstream/dev 合并进 cost-strategy 出现冲突（%s UTC）。\n\n请在本仓库 clone 中执行：\n\n```\ngit remote add upstream https://github.com/anomalyco/opencode.git\ngit fetch upstream dev\ngit merge upstream/dev\n```\n' "$(date -u '+%Y-%m-%d %H:%M')" > body.md
-          number=$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty') || true
+          search_raw=$(gh issue list --state open --search "${title} in:title" --json number 2>&1) || true
+          number=$(echo "$search_raw" | jq -r '.[0].number // empty' 2>/dev/null || echo "$search_raw")
+          echo "::notice::search raw: ${search_raw:0:200} / number: [${number}]"
           if [ -n "$number" ] && gh issue comment "$number" --body-file body.md; then
             echo "::notice::Merge conflict detected; commented on issue #$number"
             exit 0
