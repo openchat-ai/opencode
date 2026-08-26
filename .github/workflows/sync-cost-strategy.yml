@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+  issues: write
 
 jobs:
   sync:
@@ -28,7 +29,7 @@ jobs:
       - name: Notify on conflict
         if: steps.merge.outcome == 'failure'
         env:
-          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           git merge --abort || true
           title="[auto] cost-strategy 同步冲突，需要手动合并"
@@ -38,11 +39,11 @@ jobs:
             echo "::notice::Merge conflict detected; commented on issue #$number"
             exit 0
           fi
-          if url=$(gh issue create --title "$title" --body-file body.md); then
+          if url=$(gh issue create --title "$title" --body-file body.md 2>gh.err); then
             echo "::notice::Merge conflict detected; created issue $url"
             exit 0
           fi
-          echo "::warning::Merge conflict detected but notification failed"
+          echo "::warning::Merge conflict detected but notification failed: $(head -c 300 gh.err 2>/dev/null || true)"
       - name: Push
         if: steps.merge.outcome == 'success'
         env:
