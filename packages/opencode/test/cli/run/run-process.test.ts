@@ -82,12 +82,10 @@ describe("opencode run (non-interactive subprocess)", () => {
   )
 
   // The test provider's SSE error item is interpreted by the SDK as an unknown
-  // finish, not a fatal provider/session error. Lock that distinction in so it
-  // A stream that ends without a finish frame (upstream SSE cut mid-turn) is an
-  // interrupted generation, not a successful completion: partial output is
-  // still surfaced, but the process must fail (issue #39968).
+  // finish, not a fatal provider/session error. Unknown finishes should continue
+  // the prompt loop so a subsequent response can complete the run.
   cliIt.concurrent(
-    "unknown stream finish preserves partial output but exits non-zero",
+    "unknown stream finish preserves partial output and continues",
     ({ llm, opencode }) =>
       Effect.gen(function* () {
         yield* llm.push(
@@ -97,9 +95,11 @@ describe("opencode run (non-interactive subprocess)", () => {
           }),
         )
         yield* llm.fail("upstream provider exploded mid-stream")
+        yield* llm.text("recovered")
         const result = yield* opencode.run("trigger midstream error", { timeoutMs: 30_000 })
-        expect(result.exitCode).not.toBe(0)
-        expect(result.stdout).toBe("partial response\n")
+        expect(result.exitCode).toBe(0)
+        expect(result.stdout).toBe("partial response\nrecovered\n")
+        expect(result.stderr).not.toContain("upstream provider exploded mid-stream")
       }),
     60_000,
   )

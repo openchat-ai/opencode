@@ -9,6 +9,7 @@ import { Context, Effect, Exit, Layer, Scope } from "effect"
 import { eq, inArray, sql } from "drizzle-orm"
 import { DatabaseMigration } from "@opencode-ai/core/database/migration"
 import { migrations } from "@opencode-ai/core/database/migration.gen"
+import workspaceNameMigration from "@opencode-ai/core/database/migration/20260410174513_workspace-name"
 import sessionUsageMigration from "@opencode-ai/core/database/migration/20260510033149_session_usage"
 import normalizeStoragePathsMigration from "@opencode-ai/core/database/migration/20260601010001_normalize_storage_paths"
 import sessionMessageProjectionOrderMigration from "@opencode-ai/core/database/migration/20260603040000_session_message_projection_order"
@@ -39,7 +40,7 @@ const run = <A, E>(effect: Effect.Effect<A, E, SqlClientService>) =>
 const makeDb = EffectDrizzleSqlite.makeWithDefaults()
 
 describe("DatabaseMigration", () => {
-  test("backs up a corrupted database file and recreates it", async () => {
+test("backs up a corrupted database file and recreates it", async () => {
     await using tmp = await tmpdir()
     const filename = path.join(tmp.path, "recovery.sqlite")
     await Bun.write(filename, new TextEncoder().encode(`SQLite format 3\0${"x".repeat(256)}`))
@@ -59,7 +60,39 @@ describe("DatabaseMigration", () => {
     )
   })
 
-  test("backs up a partially corrupted database detected by quick_check", async () => {
+  test("defaults missing workspace names while preserving legacy workspace data", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`
+          CREATE TABLE workspace (
+            id text PRIMARY KEY,
+            type text NOT NULL,
+            branch text,
+            directory text,
+            extra text,
+            project_id text NOT NULL
+          )
+        `)
+        yield* db.run(sql`
+          INSERT INTO workspace (id, type, branch, directory, extra, project_id)
+          VALUES ('wrk_legacy', 'remote', 'main', '/repo', '{}', 'proj_legacy')
+        `)
+
+        yield* DatabaseMigration.applyOnly(db, [workspaceNameMigration])
+
+        expect(yield* db.get(sql`SELECT id, name, branch, directory, extra FROM workspace`)).toEqual({
+          id: "wrk_legacy",
+          name: "",
+          branch: "main",
+          directory: "/repo",
+          extra: "{}",
+        })
+      }),
+    )
+  })
+
+test("backs up a partially corrupted database detected by quick_check", async () => {
     await using tmp = await tmpdir()
     const filename = path.join(tmp.path, "partial-corrupt.sqlite")
 
@@ -102,7 +135,24 @@ describe("DatabaseMigration", () => {
     )
   })
 
-  test("salvages readable rows from a partially corrupted database", async () => {
+  test("imports unnamed legacy Drizzle journal entries by their actual migration timestamps", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`CREATE TABLE __drizzle_migrations (id integer PRIMARY KEY, hash text, created_at integer)`)
+        yield* db.run(sql`
+          INSERT INTO __drizzle_migrations (hash, created_at)
+          VALUES ('', ${Date.UTC(2026, 3, 10, 17, 45, 13)})
+        `)
+
+        yield* DatabaseMigration.applyOnly(db, [workspaceNameMigration])
+
+        expect(yield* db.all(sql`SELECT id FROM migration`)).toEqual([{ id: "20260410174513_workspace-name" }])
+      }),
+    )
+  })
+
+test("salvages readable rows from a partially corrupted database", async () => {
     await using tmp = await tmpdir()
     const filename = path.join(tmp.path, "salvage.sqlite")
 
@@ -146,6 +196,19 @@ describe("DatabaseMigration", () => {
         yield* Scope.close(scope, Exit.void)
       }),
     )
+  })
+
+  test("rejects unknown legacy Drizzle journal timestamps instead of guessing completed migrations", async () => {
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const db = yield* makeDb
+          yield* db.run(sql`CREATE TABLE __drizzle_migrations (id integer PRIMARY KEY, hash text, created_at integer)`)
+          yield* db.run(sql`INSERT INTO __drizzle_migrations (hash, created_at) VALUES ('', 1234567890000)`)
+          yield* DatabaseMigration.applyOnly(db, [workspaceNameMigration])
+        }),
+      ),
+    ).rejects.toThrow("does not match any known migration")
   })
 
   test("serializes concurrent embedded initialization for one database path", async () => {

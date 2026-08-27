@@ -282,7 +282,7 @@ export const make = (dependencies: Dependencies) => {
       reason: "auto",
     })
 
-    let summary = previousSummary?.type === "compaction" ? previousSummary.summary : undefined
+let summary = previousSummary?.type === "compaction" ? previousSummary.summary : undefined
     for (const [index, chunk] of contexts.entries()) {
       const chunks: string[] = []
       const publish = index === contexts.length - 1
@@ -292,6 +292,7 @@ export const make = (dependencies: Dependencies) => {
         .stream(
           LLM.request({
             model: input.model,
+            http: input.request.http,
             messages: [Message.user(buildPrompt({ previousSummary: summary, context: [chunk] }))],
             tools: [],
             generation: { maxTokens: summaryOutput },

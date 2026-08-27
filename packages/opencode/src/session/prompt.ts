@@ -1136,7 +1136,8 @@ const layer = Layer.effect(
             lastAssistant?.finish &&
             // A recoverable length finish must reach the continuation decision below;
             // otherwise this history reload exits before the extra provider turn can run.
-            !["tool-calls", "length"].includes(lastAssistant.finish) &&
+            // Unknown finishes from some providers should also keep looping.
+            !["tool-calls", "length", "unknown"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
             lastAssistant.parentID === lastUser.id
           ) {

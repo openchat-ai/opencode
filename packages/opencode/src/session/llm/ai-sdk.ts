@@ -129,6 +129,8 @@ export function toLLMEvents(
       return Effect.succeed([LLMEvent.stepStart({ index: state.step })])
 
     case "finish-step":
+      if (event.rawFinishReason === "network_error")
+        return Effect.fail(new ProviderError.ResponseStreamError("Provider finish_reason: network_error"))
       return Effect.sync(() => {
         if (event.finishReason === "other" && event.rawFinishReason === undefined) {
           throw new ProviderError.ResponseStreamError("Provider stream ended without a finish reason")

@@ -207,6 +207,13 @@ const layer = Layer.effect(
       const repeated = detectRepeatedToolCalls(context)
       const request = LLM.request({
         model,
+        http: {
+          headers: {
+            "x-session-affinity": session.id,
+            "X-Session-Id": session.id,
+            ...(session.parentID ? { "x-parent-session-id": session.parentID } : {}),
+          },
+        },
         providerOptions: { openai: { promptCacheKey } },
         system: [agent.info?.system, system.baseline]
           .filter((part): part is string => part !== undefined && part.length > 0)
