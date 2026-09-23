@@ -32,9 +32,7 @@ import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
 
-// A connection that is established but silently blackholed (e.g. a broken IPv6
-// path, see #36029/#39859) would otherwise wait for response headers forever.
-const HEADER_TIMEOUT_DEFAULT = 300_000
+const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
 function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   if (typeof ms !== "number" || ms <= 0) return res
@@ -48,7 +46,7 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
         const id = setTimeout(() => {
           const err = new ProviderError.ResponseStreamError("SSE read timed out")
           ctl.abort(err)
-          void reader.cancel(err)
+          reader.cancel(err).catch(() => {})
           reject(err)
         }, ms)
 
@@ -213,7 +211,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
           return sdk.responses(modelID)
         },
-        options: { headerTimeout: HEADER_TIMEOUT_DEFAULT },
+        options: { headerTimeout: OPENAI_HEADER_TIMEOUT_DEFAULT },
       }),
     meta: () =>
       Effect.succeed({
@@ -252,6 +250,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         return [
           provider.options?.resourceName,
           auth?.type === "api" ? auth.metadata?.resourceName : undefined,
+          auth?.type === "oauth" ? auth.accountId : undefined,
           env["AZURE_RESOURCE_NAME"],
         ].find((name) => typeof name === "string" && name.trim() !== "")
       })
@@ -377,6 +376,10 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
 
           // Skip region prefixing if model already has a cross-region inference profile prefix
           // Models from models.dev may already include prefixes like us., eu., global., etc.
+          if (modelID.startsWith("arn:")) {
+            return sdk.languageModel(modelID)
+          }
+
           const crossRegionPrefixes = ["global.", "us.", "eu.", "jp.", "apac.", "au."]
           if (crossRegionPrefixes.some((prefix) => modelID.startsWith(prefix))) {
             return sdk.languageModel(modelID)
@@ -399,7 +402,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
                 "nova-premier",
                 "nova-2",
                 "claude",
-                "deepseek",
+                "deepseek.r1",
               ].some((m) => modelID.includes(m))
               const isGovCloud = region.startsWith("us-gov")
               if (modelRequiresPrefix && !isGovCloud) {
@@ -1793,8 +1796,8 @@ const layer = Layer.effect(
         if (existing) return existing
 
         const customFetch = options["fetch"]
-        const chunkTimeout = options["chunkTimeout"]
-        const headerTimeout = options["headerTimeout"] ?? HEADER_TIMEOUT_DEFAULT
+        const chunkTimeout = options["chunkTimeout"] ?? 300_000
+        const headerTimeout = options["headerTimeout"] ?? 300_000
         delete options["chunkTimeout"]
         delete options["headerTimeout"]
 

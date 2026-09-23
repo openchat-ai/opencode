@@ -214,7 +214,7 @@ describe("opencode run (non-interactive subprocess)", () => {
   )
 
   cliIt.concurrent(
-    "--format json records partial output and an error for an interrupted stream finish",
+    "--format json records an unknown stream finish and continuation",
     ({ llm, opencode }) =>
       Effect.gen(function* () {
         yield* llm.push(
@@ -224,13 +224,26 @@ describe("opencode run (non-interactive subprocess)", () => {
           }),
         )
         yield* llm.fail("provider failed")
+        yield* llm.text("recovered")
         const result = yield* opencode.run("fail after output", { format: "json" })
 
         const events = opencode.parseJsonEvents(result.stdout)
-        // A stream cut without a finish frame must fail the run, not exit 0.
-        expect(result.exitCode).not.toBe(0)
-        expect(events.map((event) => event.type)).toContain("error")
+        expect(result.exitCode).toBe(0)
+        expect(events.map((event) => event.type)).toEqual([
+          "step_start",
+          "text",
+          "tool_use",
+          "step_finish",
+          "step_start",
+          "step_finish",
+          "step_start",
+          "text",
+          "step_finish",
+        ])
         expect(events[1]?.part).toEqual(expect.objectContaining({ type: "text", text: "partial json" }))
+        expect(events[5]?.part).toEqual(expect.objectContaining({ type: "step-finish", reason: "unknown" }))
+        expect(events[7]?.part).toEqual(expect.objectContaining({ type: "text", text: "recovered" }))
+        expect(events.at(-1)?.part).toEqual(expect.objectContaining({ type: "step-finish", reason: "stop" }))
       }),
     60_000,
   )
