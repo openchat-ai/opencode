@@ -16,7 +16,20 @@ export const DebugGroup = HttpApiGroup.make("server.debug")
           }),
         ),
       }),
-      success: Schema.Struct({ path: Schema.String, pid: Schema.Int }),
+      success: Schema.Struct({
+        path: Schema.String,
+        pid: Schema.Int,
+        memory: Schema.Struct({
+          rss: Schema.Number,
+          heapTotal: Schema.Number,
+          heapUsed: Schema.Number,
+          external: Schema.Number,
+          arrayBuffers: Schema.Number,
+        }).annotate({
+          description:
+            "The server process's memory in bytes, read just before the snapshot (Node's process.memoryUsage()). rss covers native memory the snapshot cannot show.",
+        }),
+      }),
       error: [InvalidRequestError, UnknownError],
     }).annotateMerge(
       OpenApi.annotations({

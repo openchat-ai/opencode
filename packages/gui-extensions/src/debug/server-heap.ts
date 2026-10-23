@@ -3,16 +3,21 @@ import { Predicate } from "effect"
 import path from "node:path"
 import type { ServerEndpoint } from "../sdk/main"
 
+type Memory = Readonly<Record<"rss" | "heapTotal" | "heapUsed" | "external" | "arrayBuffers", number>>
+
 /**
  * What the manifest records about the desktop server's snapshot.
  * - `file`: the server wrote it into the folder.
  * - `path`: the server wrote it elsewhere, because it predates choosing a directory and used its log directory.
  *   Snapshots are large, so it is not moved or copied.
  * - `error`: nothing was captured.
+ *
+ * `memory` is the server's `process.memoryUsage()` in bytes just before the snapshot; servers released before it was
+ * added leave it out.
  */
 export type ServerSnapshot =
-  | { readonly process: "server"; readonly pid: number; readonly file: string }
-  | { readonly process: "server"; readonly pid: number; readonly path: string }
+  | { readonly process: "server"; readonly pid: number; readonly file: string; readonly memory?: Memory }
+  | { readonly process: "server"; readonly pid: number; readonly path: string; readonly memory?: Memory }
   | { readonly process: "server"; readonly error: string }
 
 /**
@@ -36,8 +41,8 @@ export async function captureServer(
       (snapshot): ServerSnapshot =>
         // The server joins the directory and file name, so the same join recognizes a snapshot it wrote there.
         path.join(directory, path.basename(snapshot.path)) === snapshot.path
-          ? { process: "server", pid: snapshot.pid, file: path.basename(snapshot.path) }
-          : { process: "server", pid: snapshot.pid, path: snapshot.path },
+          ? { process: "server", pid: snapshot.pid, file: path.basename(snapshot.path), memory: snapshot.memory }
+          : { process: "server", pid: snapshot.pid, path: snapshot.path, memory: snapshot.memory },
       (error: Error): ServerSnapshot => ({
         process: "server",
         error: unsupported(error)

@@ -10,6 +10,7 @@ beforeAll(() => GlobalRegistrator.unregister())
 afterAll(() => GlobalRegistrator.register())
 
 test("asks the server to write into the folder, and records where an older server wrote instead", async () => {
+  const memory = { rss: 5, heapTotal: 4, heapUsed: 3, external: 2, arrayBuffers: 1 }
   const directory = path.join(os.tmpdir(), "opencode-heap-capture")
   const requests: string[] = []
 
@@ -24,7 +25,10 @@ test("asks the server to write into the folder, and records where an older serve
       // The first answer is a current server's; the second is one that predates `directory` and used its log folder.
       const folder = requests.length === 1 ? (url.searchParams.get("directory") ?? "") : path.join(os.tmpdir(), "log")
 
-      return Response.json({ path: path.join(folder, "heap-42-1.heapsnapshot"), pid: 42 })
+      const snapshot = { path: path.join(folder, "heap-42-1.heapsnapshot"), pid: 42 }
+
+      // An older server also leaves out its memory.
+      return Response.json(requests.length === 1 ? { ...snapshot, memory } : snapshot)
     },
   })
 
@@ -33,7 +37,7 @@ test("asks the server to write into the folder, and records where an older serve
   const old = await captureServer(endpoint, directory, AbortSignal.timeout(10_000))
 
   expect({ current, old, requests }).toEqual({
-    current: { process: "server", pid: 42, file: "heap-42-1.heapsnapshot" },
+    current: { process: "server", pid: 42, file: "heap-42-1.heapsnapshot", memory },
     old: { process: "server", pid: 42, path: path.join(os.tmpdir(), "log", "heap-42-1.heapsnapshot") },
     requests: [
       `POST /api/debug/heap-dump ${directory} Basic secret`,

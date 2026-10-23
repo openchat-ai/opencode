@@ -2270,7 +2270,17 @@ export interface VcsApi<E = never> {
 }
 
 export type DebugHeapDumpInput = { readonly directory?: string | undefined }
-export type DebugHeapDumpOutput = { readonly path: string; readonly pid: number }
+export type DebugHeapDumpOutput = {
+  readonly path: string
+  readonly pid: number
+  readonly memory: {
+    readonly rss: number
+    readonly heapTotal: number
+    readonly heapUsed: number
+    readonly external: number
+    readonly arrayBuffers: number
+  }
+}
 export type DebugHeapDumpOperation<E = never> = (input?: DebugHeapDumpInput) => Effect.Effect<DebugHeapDumpOutput, E>
 
 export type DebugLocationListOutput = ReadonlyArray<Location.PublicRef>

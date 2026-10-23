@@ -2349,7 +2349,7 @@ export type ConfigEntry =
         experimental?: {
           portable_shell_scanner?: boolean
           todo?: boolean
-          precompute_compaction?: boolean
+          background_compaction?: boolean
           subagent_depth?: number
           location_idle_timeout?: string | false
           policies?: Array<{
@@ -6021,7 +6021,11 @@ export type VcsDiffOutput = { location: LocationPublicRef; data: Array<FileDiffI
 
 export type DebugHeapDumpInput = { readonly directory?: { readonly directory?: string | undefined }["directory"] }
 
-export type DebugHeapDumpOutput = { path: string; pid: number }
+export type DebugHeapDumpOutput = {
+  path: string
+  pid: number
+  memory: { rss: number; heapTotal: number; heapUsed: number; external: number; arrayBuffers: number }
+}
 
 export type DebugLocationListOutput = Array<LocationPublicRef>
 

@@ -50,7 +50,11 @@ it.live(
       const responses = yield* Effect.all([api.dump(), api.dump()], { concurrency: "unbounded" })
       expect(responses.map((response) => response.status)).toEqual([200, 200])
       const results = yield* Effect.promise(() =>
-        Promise.all(responses.map((response): Promise<{ path: string; pid: number }> => response.json())),
+        Promise.all(
+          responses.map(
+            (response): Promise<{ path: string; pid: number; memory: Record<string, number> }> => response.json(),
+          ),
+        ),
       )
       expect(new Set(results.map((result) => result.path)).size).toBe(2)
       expect((yield* Effect.promise(() => fs.readdir(api.log))).toSorted()).toEqual(
@@ -58,6 +62,15 @@ it.live(
       )
       for (const result of results) {
         expect(result.pid).toBe(process.pid)
+        // Read before the snapshot: the process's footprint beyond the heap the file holds.
+        expect(Object.keys(result.memory).toSorted()).toEqual([
+          "arrayBuffers",
+          "external",
+          "heapTotal",
+          "heapUsed",
+          "rss",
+        ])
+        expect(result.memory.rss).toBeGreaterThan(result.memory.heapUsed)
         expect(path.dirname(result.path)).toBe(api.log)
         expect(path.basename(result.path)).toStartWith(`heap-${process.pid}-`)
         if (process.platform !== "win32")
