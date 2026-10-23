@@ -525,6 +525,18 @@ List configuration sources.
 $ opencode debug config
 ```
 
+Write a heap snapshot of the running background server and print its path.
+
+```bash
+$ opencode debug heap-dump
+```
+
+Write the snapshot into a directory of your choice.
+
+```bash
+$ opencode debug heap-dump --directory ./snapshots
+```
+
 Show global paths.
 
 ```bash
