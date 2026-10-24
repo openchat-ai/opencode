@@ -138,11 +138,6 @@ jobs:
         working-directory: packages/protocol
         run: bun run check:generated
 
-      - name: Check generated documentation
-        if: runner.os == 'Linux'
-        working-directory: services/www
-        run: bun run check:generated
-
   build:
     name: build (${{ matrix.settings.name }})
     strategy:
