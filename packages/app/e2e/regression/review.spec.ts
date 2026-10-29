@@ -10,6 +10,33 @@ import { readFile } from "node:fs/promises"
 
 test.use({ viewport: { width: 1440, height: 900 } })
 
+test("review toggle shows its tooltip with the side panel open or closed", async ({ page }) => {
+  await openSession(page, {
+    name: "ReviewTooltip",
+    seed: { panes: { ses_reviewtooltip: { review: true } } },
+  })
+  const toggle = page.getByRole("button", { name: "Toggle review", exact: true })
+  const tooltip = page.getByRole("tooltip", { name: /Toggle review/ })
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  await expect(page.locator("#review-panel")).toHaveAttribute("aria-hidden", "false")
+  await toggle.hover()
+  await expect(tooltip).toBeVisible()
+
+  await toggle.click()
+  await expect(toggle).toHaveAttribute("aria-expanded", "false")
+  await page.locator("[data-session-title]").hover()
+  await expect(tooltip).toBeHidden()
+  await toggle.hover()
+  await expect(tooltip).toBeVisible()
+
+  await toggle.click()
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  await page.locator("[data-session-title]").hover()
+  await expect(tooltip).toBeHidden()
+  await toggle.hover()
+  await expect(tooltip).toBeVisible()
+})
+
 for (const view of ["desktop", "mobile"] as const) {
   test(`offers Git initialization for a project without VCS (${view})`, async ({ page }) => {
     if (view === "mobile") await page.setViewportSize({ width: 390, height: 844 })
