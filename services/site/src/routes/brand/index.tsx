@@ -21,7 +21,7 @@ import { ogImage } from "~/lib/og"
 import { breadcrumbData, JsonLd } from "~/component/structured-data"
 import { useLanguage } from "~/context/language"
 import { englishText, localize } from "~/i18n/content"
-import { source } from "~/i18n/content/source"
+import { brandSource } from "~/i18n/content/areas/brand"
 import { Site } from "~/component/site/site"
 import { useI18n } from "~/context/i18n"
 import {
@@ -47,7 +47,7 @@ export default function Brand() {
   const [copied, setCopied] = createSignal<string>()
   const content = createMemo(() => localize(language.locale(), "brand", brandContent(i18n.t)))
   // Heading ids stay English in every locale, so links to /brand#naming keep working.
-  const english = createMemo(() => englishText(content(), source.brand))
+  const english = createMemo(() => englishText(content(), brandSource))
   const anchor = (text: string) => slug(english().get(text) ?? text)
   const lower = (text: string) => (language.locale() === "en" ? text.toLowerCase() : text)
   // A tone ("light", "dark") in the page's language, lower case in English as in a sentence.
@@ -937,15 +937,18 @@ export default function Brand() {
         <div data-slot="body">
           <p data-slot="text">{content().usage.body}</p>
           <ul data-component="usage">
-            <li data-slot="stroke" data-hidden={siteSettings.strokeDiagram === "off" ? "" : undefined}>
-              <div data-slot="figure">
-                <StrokeDiagrams />
-              </div>
-              <Heading level={3} id={`${anchor(content().usage.title)}-${anchor(content().usage.stroke.title)}`}>
-                {content().usage.stroke.title}
-              </Heading>
-              <span>{content().usage.stroke.body}</span>
-            </li>
+            {/* Production leaves it out while "off" is the default (script/fold-settings.ts). */}
+            <Show when={import.meta.env.DEV || siteSettings.strokeDiagram !== "off"}>
+              <li data-slot="stroke" data-hidden={siteSettings.strokeDiagram === "off" ? "" : undefined}>
+                <div data-slot="figure">
+                  <StrokeDiagrams />
+                </div>
+                <Heading level={3} id={`${anchor(content().usage.title)}-${anchor(content().usage.stroke.title)}`}>
+                  {content().usage.stroke.title}
+                </Heading>
+                <span>{content().usage.stroke.body}</span>
+              </li>
+            </Show>
             <li data-slot="clear-space">
               <div data-slot="figure">
                 <ClearSpace />
