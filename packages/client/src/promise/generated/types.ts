@@ -355,9 +355,16 @@ export type ArtifactID = string
 
 export type ArtifactTime = { created: number; updated: number }
 
-export type MachineInfo = { id: string; online: boolean; paired: boolean; os?: string; arch?: string }
+export type MachineInfo = {
+  id: string
+  online: boolean
+  paired: boolean
+  os?: string
+  arch?: string
+  connection?: { kind: "websocket" | "iroh"; path?: "direct" | "relayed"; rtt?: number }
+}
 
-export type MachineInvite = { name: string; join: string; expires: number }
+export type MachineReach = { type: "url"; url: string }
 
 export type ReferenceGitSource = { type: "git"; repository: string; branch?: string }
 
@@ -1019,6 +1026,13 @@ export type ArtifactInfo = {
   entry: string
   url: string
   time: ArtifactTime
+}
+
+export type MachineInvite = {
+  name: string
+  join: string
+  expires: number
+  reach: Array<MachineReach | { type: "iroh" }>
 }
 
 export type VcsInfo = { provider?: string; branch: VcsBranch }
@@ -2465,6 +2479,7 @@ export type ConfigEntry =
         enterprise?: { url?: string }
         username?: string
         timezone?: string
+        automations?: boolean
         permissions?: PermissionRuleset
         policies?: Array<{
           action:
@@ -2641,7 +2656,6 @@ export type ConfigEntry =
           all_flags?: boolean
           todo?: boolean
           media_blob?: boolean
-          automations?: boolean
           artifacts?: boolean
           video_generate?: boolean | { model?: string | { providerID: string; model: string; variant?: string } }
           console_watches?: boolean
@@ -2652,7 +2666,6 @@ export type ConfigEntry =
           home_memory?: boolean
           project_overlay?: boolean
           sqlite_fts?: boolean
-          schedules?: boolean
           part_rows?: boolean
           image_generate?: boolean | { model?: string | { providerID: string; model: string; variant?: string } }
           subagent_depth?: number

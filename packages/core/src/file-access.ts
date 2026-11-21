@@ -50,6 +50,8 @@ export interface Target {
   readonly externalDirectory?: ExternalDirectoryAuthorization
   /** Where the target lives. Tools act on the target through this, not through a captured Environment. */
   readonly environment: Environment.Interface
+  /** The machine the file is on, when it is not on this server. */
+  readonly machine?: Environment.ID
 }
 
 export function externalDirectoryRequest(targets: readonly Target[]) {
@@ -71,6 +73,9 @@ export function externalDirectoryRequest(targets: readonly Target[]) {
  */
 export const key = (target: { readonly absolute: string; readonly environment: { readonly id: Environment.ID } }) =>
   `${target.environment.id.length}:${target.environment.id}:${target.absolute}`
+
+/** The rule "always" saves for a file action: every file on the target's machine. */
+export const always = (target: Target) => (target.machine ? `${target.machine}:*` : "*")
 
 export type Invocation = Pick<Tool.Context, "sessionID" | "agent" | "messageID" | "id">
 
@@ -134,6 +139,24 @@ const layer = Layer.effect(
       // Only text the model typed can name a machine: text derived from a target is a plain path on that target's
       // machine, and a shell there does not understand `gpu:`.
       const machine = !base && enabled ? MachinePath.parse(text) : undefined
+      // A machine path is absolute or starts with ~/, so `gpu:work` is no machine path and would quietly be this
+      // server's folder. Only a name that is a machine here is refused: another name stays a local folder, as before.
+      if (!base && enabled) {
+        const colon = text.indexOf(":")
+        const name = text.slice(0, colon)
+        const rest = text.slice(colon + 1)
+        if (
+          colon > 0 &&
+          Schema.is(Machines.Name)(name) &&
+          !rest.startsWith("/") &&
+          !rest.startsWith("~") &&
+          (yield* machines.list()).some((info) => info.id === name)
+        )
+          return yield* new Environment.Failed({
+            path: text,
+            cause: new MachinePath.NotAbsolute({ machine: Environment.ID.make(name) }),
+          })
+      }
       const id = machine?.machine ?? base?.environment.id ?? environment.id
       if (!machine && id === environment.id)
         return {
@@ -226,6 +249,7 @@ const layer = Layer.effect(
           save: `${prefix}${path.posix.join(directory, "*")}`,
         },
         environment: machineEnvironment,
+        machine: place.environment.id,
       } satisfies Target
     })
 
@@ -268,7 +292,7 @@ const layer = Layer.effect(
       yield* permission.assert({
         action: "read",
         resources: [target.resource],
-        save: ["*"],
+        save: [always(target)],
         ...Permission.invocation(context),
       })
       return target
