@@ -7,13 +7,13 @@ import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
 import type { Shell as ShellSchema } from "@opencode/schema/shell"
 import type { Tool } from "@opencode/schema/tool"
 import { Clock, Deferred, Effect, Fiber, Option, Schema, Struct } from "effect"
+import { Agent } from "../../agent.js"
 import { Config } from "../../config.js"
 import { ConfigEntryObserver } from "../../config/plugin/entry-observer.js"
 import { Environment } from "../../environment/index.js"
 import { Flag } from "../../flag.js"
 import { Job } from "../../job.js"
 import { FileAccess } from "../../file-access.js"
-import { Location } from "../../location.js"
 import { Permission } from "../../permission.js"
 import { NonNegativeInt } from "../../schema.js"
 import { Session } from "../../session.js"
@@ -304,10 +304,11 @@ export const Plugin = {
   id: "opencode.tool.shell",
   effect: Effect.fn("ShellTool.Plugin")(function* (ctx: Context) {
     const sessions = yield* Session.Service
+    const agents = yield* Agent.Service
     const jobs = yield* Job.Service
     const access = yield* FileAccess.Service
     const environment = yield* Environment.Service
-    const location = yield* Location.Service
+    const workingDirectory = yield* Environment.workingDirectory
     const shell = yield* Shell.Service
     const shellSelect = yield* ShellSelect.Service
     const compatibleShell = shellSelect.resolve({ priority: "compat" })
@@ -329,10 +330,7 @@ export const Plugin = {
           ? requested.target
           : yield* access.resolve({
               path: invocation.cwd,
-              base:
-                requested.target.environment.id === environment.id
-                  ? { absolute: location.directory, environment }
-                  : requested.target,
+              base: requested.target.environment.id === environment.id ? workingDirectory : requested.target,
               kind: "directory",
             })
       invocation.cwd = target.absolute
@@ -342,6 +340,11 @@ export const Plugin = {
         program: invocation.shell,
         target,
         local: target.environment.id === environment.id,
+        rules: Effect.gen(function* () {
+          const session = yield* sessions.get(context.sessionID)
+          const agent = yield* agents.resolve(context.agent)
+          return Permission.merge(agent?.permissions ?? [], session.permissions ?? [])
+        }),
       })
       yield* Effect.forEach(
         requests,
@@ -441,7 +444,7 @@ export const Plugin = {
                 )
                 return yield* Effect.gen(function* () {
                   // The same default `Shell.create` gives the hooks, so `prepare` can tell whether one moved it.
-                  const cwd = input.workdir ?? location.directory
+                  const cwd = input.workdir ?? workingDirectory.absolute
                   const target = yield* restore(
                     Effect.raceFirst(access.resolve({ path: cwd, kind: "directory" }), stoppedBeforeStart),
                   )

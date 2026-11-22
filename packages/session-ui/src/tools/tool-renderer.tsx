@@ -254,6 +254,13 @@ export function displayDirectory(path: string | undefined) {
   return relativizeProjectPath(getDirectory(path), data.directory)
 }
 
+/** A folder a tool searched or listed, relative to the project; `/` for the project itself. */
+export function displayFolder(path: string | undefined) {
+  const data = useData()
+
+  return relativizeProjectPath(path ?? "/", data.directory) || "/"
+}
+
 import { resolveFileDiff } from "../components/session-diff"
 import { factsOf, sameFileFact, summarize, type FileFact } from "../timeline/facts"
 import { contextGroupLabel, webSearchProviderLabel } from "./context-group-label"
@@ -1242,7 +1249,7 @@ export function samePatchFile(a: FileDiffInfo, b: FileDiffInfo) {
 function currentContextToolTrigger(tool: SessionMessageAssistantTool, i18n: ReturnType<typeof useI18n>) {
   const input = toolInput(currentToolInput(tool))
   const metadata = toolMetadata(currentToolMetadata(tool))
-  const subtitle = displayDirectory(input.path ?? "/")
+  const subtitle = displayFolder(input.path)
 
   const matches = (count: number | undefined) =>
     count ? i18n.plural("ui.messagePart.context.match", count) : undefined
@@ -1379,6 +1386,63 @@ export function FileAccordionGroup(props: { children: JSX.Element }) {
   )
 }
 
+// A file's diff shows this much until its toggle opens the rest.
+const FILE_DIFF_FOLD = 420
+
+/** Folds a tall file diff as a long user message folds: laid out whole, clipped, and opened by its toggle. */
+export function FileDiffFold(props: { children: JSX.Element }) {
+  const i18n = useI18n()
+  const id = createUniqueId()
+  const [state, setState] = createStore({ tall: false, expanded: false })
+
+  let fold: HTMLDivElement | undefined
+  let toggle: HTMLButtonElement | undefined
+
+  // The limit always applies and the toggle lies over the fold, so measuring moves nothing. A height changed during
+  // this delivery would reach the timeline's row observer a frame late, as a ResizeObserver loop error.
+  createResizeObserver(
+    () => fold,
+    () => setState("tall", fold!.scrollHeight >= FILE_DIFF_FOLD),
+  )
+
+  // Closing shrinks the diff above the toggle, which would leave the reader far past its end, so the toggle stays
+  // where it was pressed. Opening moves nothing above it.
+  const flip = () => {
+    const before = toggle!.getBoundingClientRect().top
+    setState("expanded", !state.expanded)
+    const moved = before - toggle!.getBoundingClientRect().top
+
+    if (moved > 1) scrollParent(toggle!)?.scrollBy({ top: -moved, behavior: "instant" })
+  }
+
+  return (
+    <>
+      <div
+        ref={fold}
+        id={id}
+        data-slot="file-diff-fold"
+        data-folded={state.tall && !state.expanded ? "" : undefined}
+        style={{ "max-height": state.expanded ? undefined : `${FILE_DIFF_FOLD}px` }}
+      >
+        {props.children}
+      </div>
+      <Show when={state.tall || state.expanded}>
+        <button
+          ref={toggle}
+          type="button"
+          data-slot="file-diff-fold-toggle"
+          aria-expanded={state.expanded}
+          aria-controls={id}
+          onClick={flip}
+        >
+          {i18n.t(state.expanded ? "ui.common.showLess" : "ui.common.showMore")}
+          <Icon name="chevron-down" />
+        </button>
+      </Show>
+    </>
+  )
+}
+
 function FileAccordionItem(props: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -1422,7 +1486,7 @@ function FileAccordionItem(props: {
           data-slot="accordion-content"
           data-expanded=""
         >
-          {props.children}
+          <FileDiffFold>{props.children}</FileDiffFold>
         </div>
       </Show>
     </div>
@@ -1581,7 +1645,7 @@ export function toolErrorSubtitle(props: ToolProps, i18n: UiI18n) {
   if (props.tool === "read" || props.tool === "edit" || props.tool === "write") return getFilename(input.path ?? "")
 
   if (props.tool === "list" || props.tool === "glob" || props.tool === "grep")
-    return displayDirectory(input.path || "/")
+    return displayFolder(input.path)
 
   if (props.tool === "webfetch") return input.url || undefined
 
@@ -1725,7 +1789,7 @@ ToolRegistry.register({
         hasContent={!!props.output}
         trigger={{
           title: i18n.t("ui.tool.list"),
-          subtitle: displayDirectory(toolInput(props.input).path ?? "/"),
+          subtitle: displayFolder(toolInput(props.input).path),
         }}
       >
         <Show when={props.output}>
@@ -1757,7 +1821,7 @@ ToolRegistry.register({
         hasContent={!!props.output}
         trigger={{
           title: i18n.t("ui.tool.glob"),
-          subtitle: displayDirectory(input().path ?? "/"),
+          subtitle: displayFolder(input().path),
           args: input().pattern === undefined ? [] : ["pattern=" + input().pattern],
         }}
       >
@@ -1795,7 +1859,7 @@ ToolRegistry.register({
         hasContent={!!props.output}
         trigger={{
           title: i18n.t("ui.tool.grep"),
-          subtitle: displayDirectory(input().path ?? "/"),
+          subtitle: displayFolder(input().path),
           args: args(),
         }}
       >
