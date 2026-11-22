@@ -88,9 +88,9 @@ const StructuredOutput = Schema.Struct({
       "The exit code once the command has exited: 0 means success. null while it is still running, or when a signal ended it.",
   }),
   signal: Schema.optionalKey(Schema.String).annotate({ description: "The signal that ended the command, if any" }),
-  output: Schema.String.annotate({
+  killed: Schema.optionalKey(Schema.String).annotate({
     description:
-      "Combined stdout and stderr as one string; there are no separate stdout or stderr fields. While shellID is present it is a notice instead, and the output streams to outputPath.",
+      "Why the command ended without an exit code, when the reason is known: the machine's worker restarted or lost the process, or the local process daemon stopped",
   }),
   outputPath: Schema.optionalKey(Schema.String).annotate({
     description: "File with the full output, when output was truncated or the command is running in the background",
@@ -98,11 +98,11 @@ const StructuredOutput = Schema.Struct({
   pid: Schema.optionalKey(NonNegativeInt).annotate({
     description: "Process ID while the command is running in the background",
   }),
-  killed: Schema.optionalKey(Schema.String).annotate({
-    description:
-      "Why the command ended without an exit code, when the reason is known: the machine's worker restarted or lost the process, or the local process daemon stopped",
-  }),
   wallTimeSeconds: Schema.Number.annotate({ description: "Seconds since the command started" }),
+  output: Schema.String.annotate({
+    description:
+      "Combined stdout and stderr as one string; there are no separate stdout or stderr fields. While shellID is present it is a notice instead, and the output streams to outputPath.",
+  }),
 })
 
 type Output = ReturnType<typeof ShellResult.output> & {
@@ -307,7 +307,6 @@ export const Plugin = {
     const agents = yield* Agent.Service
     const jobs = yield* Job.Service
     const access = yield* FileAccess.Service
-    const environment = yield* Environment.Service
     const workingDirectory = yield* Environment.workingDirectory
     const shell = yield* Shell.Service
     const shellSelect = yield* ShellSelect.Service
@@ -330,7 +329,10 @@ export const Plugin = {
           ? requested.target
           : yield* access.resolve({
               path: invocation.cwd,
-              base: requested.target.environment.id === environment.id ? workingDirectory : requested.target,
+              base:
+                requested.target.environment.id === workingDirectory.environment.id
+                  ? workingDirectory
+                  : requested.target,
               kind: "directory",
             })
       invocation.cwd = target.absolute
@@ -339,7 +341,6 @@ export const Plugin = {
         command: invocation.command,
         program: invocation.shell,
         target,
-        local: target.environment.id === environment.id,
         rules: Effect.gen(function* () {
           const session = yield* sessions.get(context.sessionID)
           const agent = yield* agents.resolve(context.agent)
