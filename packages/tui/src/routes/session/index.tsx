@@ -37,6 +37,7 @@ import {
   type SessionMessageUser,
   type SessionInfo,
   type ModelInfo,
+  type PermissionRequest,
 } from "@opencode/client"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
@@ -57,6 +58,7 @@ import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useClient } from "../../context/client"
 import { useEditorContext } from "../../context/editor"
 import { useDialog } from "../../ui/dialog"
+import { clickedLink } from "../../ui/link"
 import { DialogSelect } from "../../ui/dialog-select"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { TodoItem } from "../../component/todo-item"
@@ -209,6 +211,11 @@ export function Session(props: {
     )
   })
   const promptedPermissions = createMemo(() => (local.permission.mode === "autoaccept" ? [] : permissions()))
+  // The shown request stays until it is answered, so a newer one can't take its place under the cursor.
+  const promptedPermission = createMemo((previous?: PermissionRequest) => {
+    const requests = promptedPermissions()
+    return requests.find((request) => request.id === previous?.id) ?? requests[0]
+  })
   const forms = createMemo(() => {
     const global = data.session.form.list("global", location()) ?? []
     if (session()?.parentID) return global
@@ -390,6 +397,7 @@ export function Session(props: {
     firstJump()?.()
     if (!scroll || scroll.isDestroyed) return
     scroll.verticalScrollBar.off("change", updateAwayFromBottom)
+    scroll.content.off("resize", contentResized)
     saveScrollAnchor(true)
   })
   const [prompt, setPrompt] = createSignal<PromptRef>()
@@ -527,6 +535,11 @@ export function Session(props: {
       return true
     if (visibleEnd() < rows.length) return true
     return scroll.scrollTop < Math.max(0, scroll.scrollHeight - scroll.viewport.height)
+  }
+  // Content that shrinks under a reader at the top, like a collapsed group, scrolls nothing, so no scroll event
+  // clears "Jump to latest".
+  function contentResized() {
+    if (awayFromBottom()) updateAwayFromBottom()
   }
   function updateAwayFromBottom() {
     const preserveWindow = revealingOlderRows || revealingNewerRows || !!ensureAllRowsPending || !!firstJump()
@@ -1665,6 +1678,7 @@ export function Session(props: {
                   scroll = r
                   props.scrollRef?.(r)
                   scroll.verticalScrollBar.on("change", updateAwayFromBottom)
+                  scroll.content.on("resize", contentResized)
                 }}
                 viewportOptions={{
                   paddingRight: showScrollbar() ? 1 : 0,
@@ -1754,9 +1768,9 @@ export function Session(props: {
               <Switch>
                 <Match when={composerVisible()}>{null}</Match>
                 <Match when={promptedPermissions().length > 0}>
-                  <Show when={promptedPermissions()[0]?.id} keyed>
+                  <Show when={promptedPermission()?.id} keyed>
                     {(_) => {
-                      const request = promptedPermissions()[0]
+                      const request = promptedPermission()
                       return request ? (
                         <PermissionPrompt request={request} directory={session()?.location.directory} />
                       ) : null
@@ -2390,7 +2404,7 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
             renderBlock={plugins.markdown()}
             streaming={status() === "running"}
             content={content()}
-            tableOptions={{ style: "grid", cellPaddingX: 1 }}
+            tableOptions={{ style: "grid", cellPaddingX: 1, borderColor: theme.border.base }}
             conceal={ctx.markdownMode() === "rendered"}
             fg={theme.markdown.text}
             bg={theme.background.base}
@@ -2561,8 +2575,10 @@ function UserMessage(props: { message: SessionMessageUser }) {
           onMouseOut={() => {
             setHover(false)
           }}
-          onMouseUp={() => {
+          onMouseUp={(event) => {
             if (renderer.getSelection()?.getSelectedText()) return
+            // The app opens the clicked link.
+            if (clickedLink(renderer, event)) return
             if (delivery() === "steer") {
               dialog.replace(() => (
                 <DialogSelect
